@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from mlx_ci.contracts import ContractError, unwrap_runner_manifest
-from mlx_ci.repository_plan import prepare_repository_plan
+from mlx_ci.repository_plan import prepare_repository_plan, validate_repository_queue
 
 
 class RepositoryPlanTests(unittest.TestCase):
@@ -70,6 +70,24 @@ class RepositoryPlanTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ContractError, "file is invalid"):
             prepare_repository_plan(control, jobs=self.jobs)
+
+    def test_queue_rejects_duplicate_jobs(self):
+        manifest = self.manifest()
+        self.write("models-family.json", manifest)
+        queue, _ = prepare_repository_plan(self.control(manifest), jobs=self.jobs)
+        queue["jobs"].append(queue["jobs"][0])
+
+        with self.assertRaisesRegex(ContractError, "must be unique"):
+            validate_repository_queue(queue)
+
+    def test_queue_rejects_job_identity_mismatch(self):
+        manifest = self.manifest()
+        self.write("models-family.json", manifest)
+        queue, _ = prepare_repository_plan(self.control(manifest), jobs=self.jobs)
+        queue["head_sha"] = "d" * 40
+
+        with self.assertRaisesRegex(ContractError, "head_sha does not match"):
+            validate_repository_queue(queue)
 
     def write(self, name, value):
         (self.jobs / name).write_text(json.dumps(value))

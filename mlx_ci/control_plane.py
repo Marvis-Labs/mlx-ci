@@ -11,7 +11,6 @@ from mlx_ci.store import StateError, StateStore
 class SubmissionDisposition(StrEnum):
     CREATED = "created"
     REPLAYED = "replayed"
-    COALESCED = "coalesced"
 
 
 @dataclass(frozen=True)
@@ -54,12 +53,9 @@ class ControlPlane:
         attempt, reused, jobs = self.store.submit_work_plan(
             request, plan, attempt_id=attempt_id
         )
-        if not reused:
-            disposition = SubmissionDisposition.CREATED
-        elif attempt["request_id"] == request["request_id"]:
-            disposition = SubmissionDisposition.REPLAYED
-        else:
-            disposition = SubmissionDisposition.COALESCED
+        disposition = (
+            SubmissionDisposition.REPLAYED if reused else SubmissionDisposition.CREATED
+        )
 
         stored_plan = self.store.get_plan(attempt["attempt_id"])
         if stored_plan is None:

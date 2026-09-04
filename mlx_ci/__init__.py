@@ -5,6 +5,7 @@ from mlx_ci.contracts import (
     seal_result,
     seal_work_plan,
     unwrap_runner_manifest,
+    validate_assignment,
     validate_envelope,
     validate_job,
     validate_lease,
@@ -30,13 +31,21 @@ from mlx_ci.github_ingress import (
     RepositoryRegistration,
 )
 from mlx_ci.scheduler import Assignment, QueueDiagnostic, QueueReason, Scheduler
+from mlx_ci.service import (
+    AuthenticationError,
+    ControlService,
+    RunnerAuthenticator,
+    authenticate_token,
+)
 from mlx_ci.store import StateConflict, StateError, StateStore
 
 __all__ = [
     "Assignment",
+    "AuthenticationError",
     "AuthorizedRun",
     "ContractError",
     "ControlPlane",
+    "ControlService",
     "GitHubIngress",
     "GitHubIngressError",
     "IngressDecision",
@@ -44,6 +53,7 @@ __all__ = [
     "QueueDiagnostic",
     "QueueReason",
     "RepositoryRegistration",
+    "RunnerAuthenticator",
     "Scheduler",
     "StateConflict",
     "StateError",
@@ -51,11 +61,13 @@ __all__ = [
     "SubmissionDisposition",
     "SubmissionReceipt",
     "canonical_digest",
+    "authenticate_token",
     "seal_manifest",
     "seal_result",
     "seal_work_plan",
     "unwrap_runner_manifest",
     "validate_envelope",
+    "validate_assignment",
     "validate_job",
     "validate_lease",
     "validate_request",

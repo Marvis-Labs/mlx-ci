@@ -8,7 +8,12 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from mlx_ci.contracts import ContractError, wrap_runner_manifest
+from mlx_ci.contracts import (
+    ContractError,
+    canonical_json,
+    validate_job,
+    wrap_runner_manifest,
+)
 
 MEMORY_CLASSES = (16, 32, 64, 128, 192, 256, 512)
 FILE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.json")
@@ -63,7 +68,51 @@ def prepare_repository_plan(
         "terminal_state": record["terminal_state"],
         "jobs": wrapped,
     }
+    validate_repository_queue(queue)
     return queue, matrix
+
+
+def validate_repository_queue(value: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ContractError("repository queue must be an object")
+    expected = {
+        "schema_version",
+        "kind",
+        "attempt_id",
+        "repository",
+        "base_sha",
+        "head_sha",
+        "contract_sha",
+        "terminal_state",
+        "jobs",
+    }
+    if set(value) != expected:
+        raise ContractError("repository queue fields are invalid")
+    if value.get("schema_version") != 1 or value.get("kind") != "repository_queue":
+        raise ContractError("repository queue must use schema v1")
+    if value.get("terminal_state") not in {"planned", "blocked"}:
+        raise ContractError("repository queue terminal_state is invalid")
+    jobs = value.get("jobs")
+    if not isinstance(jobs, list) or len(jobs) > 512:
+        raise ContractError("repository queue jobs must be a bounded list")
+    if len(canonical_json(value)) > 16_000_000:
+        raise ContractError("repository queue exceeds the contract size limit")
+    seen = set()
+    for job in jobs:
+        job = validate_job(job)
+        if job["job_id"] in seen:
+            raise ContractError("repository queue job ids must be unique")
+        seen.add(job["job_id"])
+        for field in (
+            "attempt_id",
+            "repository",
+            "base_sha",
+            "head_sha",
+            "contract_sha",
+        ):
+            if job[field] != value[field]:
+                raise ContractError(f"repository queue {field} does not match job")
+    return dict(value)
 
 
 def _record(value: Mapping[str, Any]) -> dict[str, Any]:

@@ -267,6 +267,27 @@ def validate_envelope(value: Mapping[str, Any]) -> dict[str, Any]:
     return dict(value)
 
 
+def validate_assignment(value: Mapping[str, Any]) -> dict[str, Any]:
+    _exact_fields(value, {"schema_version", "kind", "lease", "envelope"})
+    _header(value, "runner_assignment")
+    lease = value.get("lease")
+    envelope = value.get("envelope")
+    if not isinstance(lease, Mapping) or not isinstance(envelope, Mapping):
+        raise ContractError("runner assignment requires a lease and envelope")
+    lease = validate_lease(lease)
+    envelope = validate_envelope(envelope)
+    manifest = envelope["manifest"]
+    for manifest_field, lease_field in (
+        ("attempt_id", "attempt_id"),
+        ("job_id", "job_id"),
+    ):
+        if manifest[manifest_field] != lease[lease_field]:
+            raise ContractError(
+                f"runner assignment {manifest_field} does not match its lease"
+            )
+    return dict(value)
+
+
 def validate_runner(value: Mapping[str, Any]) -> dict[str, Any]:
     _exact_fields(
         value,

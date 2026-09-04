@@ -61,9 +61,7 @@ class StateStore:
                     completed_at TEXT
                 );
 
-                CREATE UNIQUE INDEX IF NOT EXISTS one_active_attempt_per_revision
-                    ON attempts(repository, pull_request, head_sha)
-                    WHERE state IN ('queued', 'running');
+                DROP INDEX IF EXISTS one_active_attempt_per_revision;
 
                 CREATE TABLE IF NOT EXISTS requests (
                     request_id TEXT PRIMARY KEY,
@@ -210,14 +208,14 @@ class StateStore:
         )
         with self._transaction() as connection:
             attempt, reused = self._create_attempt(connection, request, record)
-            coalesced = reused and attempt["request_id"] != request["request_id"]
             persisted_plan = connection.execute(
-                "SELECT 1 FROM plans WHERE attempt_id = ?",
+                "SELECT plan_digest FROM plans WHERE attempt_id = ?",
                 (attempt["attempt_id"],),
             ).fetchone()
-            if (not coalesced or persisted_plan is None) and attempt[
-                "state"
-            ] in ACTIVE_ATTEMPT_STATES:
+            if persisted_plan is not None:
+                if persisted_plan["plan_digest"] != plan["plan_digest"]:
+                    raise StateConflict("request replay changed its work plan")
+            elif attempt["state"] in ACTIVE_ATTEMPT_STATES:
                 self._record_plan(connection, attempt, plan, request["requested_at"])
                 manifests = [
                     wrap_runner_manifest(job, attempt_id=attempt["attempt_id"])
@@ -377,6 +375,38 @@ class StateStore:
                 (runner_id,),
             ).fetchone()
         return json.loads(row["capability_json"]) if row is not None else None
+
+    def get_active_assignment(
+        self, runner_id: str, *, now: str
+    ) -> dict[str, Any] | None:
+        _identifier(runner_id, "runner_id")
+        _parse_timestamp(now, "now")
+        with self._transaction() as connection:
+            self._reap_expired(connection, now)
+            row = connection.execute(
+                """
+                SELECT leases.*, jobs.manifest_json
+                FROM leases
+                JOIN jobs USING (attempt_id, job_id)
+                WHERE leases.runner_id = ? AND leases.released_at IS NULL
+                """,
+                (runner_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            lease = {
+                "schema_version": 1,
+                "kind": "runner_lease",
+                "lease_id": row["lease_id"],
+                "attempt_id": row["attempt_id"],
+                "job_id": row["job_id"],
+                "runner_id": row["runner_id"],
+                "generation": row["generation"],
+                "acquired_at": row["acquired_at"],
+                "heartbeat_at": row["heartbeat_at"],
+                "expires_at": row["expires_at"],
+            }
+            return {"lease": lease, "manifest": json.loads(row["manifest_json"])}
 
     def get_plan(self, attempt_id: str) -> dict[str, Any] | None:
         with closing(self._connect()) as connection:
@@ -696,6 +726,32 @@ class StateStore:
                 """,
                 (now, result["lease_id"]),
             )
+            unfinished = connection.execute(
+                """
+                SELECT COUNT(*) FROM jobs
+                WHERE attempt_id = ? AND state IN ('queued', 'leased')
+                """,
+                (result["attempt_id"],),
+            ).fetchone()[0]
+            if not unfinished:
+                failed = connection.execute(
+                    """
+                    SELECT COUNT(*) FROM jobs
+                    WHERE attempt_id = ? AND state != 'completed'
+                    """,
+                    (result["attempt_id"],),
+                ).fetchone()[0]
+                connection.execute(
+                    """
+                    UPDATE attempts SET state = ?, completed_at = ?
+                    WHERE attempt_id = ? AND state IN ('queued', 'running')
+                    """,
+                    (
+                        "failed" if failed else "completed",
+                        now,
+                        result["attempt_id"],
+                    ),
+                )
         return result
 
     def record_runner_response(
@@ -801,25 +857,6 @@ class StateStore:
                         f"request_id was reused with a different {field}"
                     )
             return _attempt_record(existing), True
-
-        active = connection.execute(
-            """
-            SELECT * FROM attempts
-            WHERE repository = ? AND pull_request = ? AND head_sha = ?
-              AND state IN ('queued', 'running')
-            """,
-            (record["repository"], record["pull_request"], record["head_sha"]),
-        ).fetchone()
-        if active is not None:
-            connection.execute(
-                "INSERT INTO requests VALUES (?, ?, ?)",
-                (
-                    request["request_id"],
-                    active["attempt_id"],
-                    canonical_json(request).decode(),
-                ),
-            )
-            return dict(active), True
 
         connection.execute(
             """

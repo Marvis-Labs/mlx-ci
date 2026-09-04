@@ -49,7 +49,7 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(replay.attempt_id, first.attempt_id)
         self.assertEqual(len(self.store.list_jobs()), 1)
 
-    def test_active_command_is_coalesced_without_replacing_owners_plan(self):
+    def test_each_command_creates_an_independent_attempt(self):
         first_plan = self.plan()
         first = self.control.submit(
             self.request("request:1"), first_plan, attempt_id="attempt:1"
@@ -63,10 +63,11 @@ class ControlPlaneTests(unittest.TestCase):
             self.request("request:2"), changed_plan, attempt_id="attempt:2"
         )
 
-        self.assertEqual(second.disposition, SubmissionDisposition.COALESCED)
-        self.assertEqual(second.attempt_id, first.attempt_id)
-        self.assertEqual(second.plan_digest, first.plan_digest)
-        self.assertEqual(second.job_ids, ("job:first",))
+        self.assertEqual(first.disposition, SubmissionDisposition.CREATED)
+        self.assertEqual(second.disposition, SubmissionDisposition.CREATED)
+        self.assertEqual(second.attempt_id, "attempt:2")
+        self.assertNotEqual(second.plan_digest, first.plan_digest)
+        self.assertEqual(second.job_ids, ("job:different",))
 
     def test_command_after_terminal_attempt_creates_fresh_work(self):
         plan = self.plan()
@@ -111,7 +112,7 @@ class ControlPlaneTests(unittest.TestCase):
 
         self.assertIsNone(self.store.get_attempt("attempt:1"))
 
-    def test_concurrent_commands_create_one_owner_attempt(self):
+    def test_concurrent_commands_create_independent_attempts(self):
         def submit(number):
             return self.control.submit(
                 self.request(f"request:{number}"),
@@ -123,10 +124,9 @@ class ControlPlaneTests(unittest.TestCase):
             receipts = list(executor.map(submit, range(1, 9)))
 
         dispositions = [receipt.disposition for receipt in receipts]
-        self.assertEqual(dispositions.count(SubmissionDisposition.CREATED), 1)
-        self.assertEqual(dispositions.count(SubmissionDisposition.COALESCED), 7)
-        self.assertEqual(len({receipt.attempt_id for receipt in receipts}), 1)
-        self.assertEqual(len(self.store.list_jobs()), 1)
+        self.assertEqual(dispositions.count(SubmissionDisposition.CREATED), 8)
+        self.assertEqual(len({receipt.attempt_id for receipt in receipts}), 8)
+        self.assertEqual(len(self.store.list_jobs()), 8)
 
     @staticmethod
     def request(request_id, repository="Example/project"):

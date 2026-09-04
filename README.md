@@ -46,6 +46,31 @@ payload. Before dispatch it verifies that work identity, repository, revisions,
 phases, and resource requirements agree across both layers, then restores the
 original flat manifest expected by the generic runner.
 
+Each accepted `/ci run` delivery creates a separate immutable attempt. Replaying
+the same delivery is idempotent, but a later command for the same pull request
+and head revision does not coalesce with earlier work.
+
+Runner transport is a bounded JSON WSGI interface intended to sit behind a TLS
+reverse proxy. Every device has an independent high-entropy bearer token, while
+trusted ingestion uses a separate credential. The service stores token digests,
+assigns heartbeat timestamps, binds renewals, responses, and results to both the
+runner identity and lease generation, and returns only Ed25519-signed canonical
+manifests. Private signing keys and credential files must be service-owned,
+non-symlinked, and inaccessible to group or other users. Runners trust an
+explicit key-ID-to-public-key map so rotations can overlap without accepting an
+unknown signer.
+
+The application factory reads `MLX_CI_STATE_PATH`,
+`MLX_CI_RUNNER_CREDENTIALS`, `MLX_CI_SIGNING_KEY`,
+`MLX_CI_SIGNING_KEY_ID`, and `MLX_CI_QUEUE_TOKEN_DIGEST`. It intentionally does
+not provide a cleartext development server.
+
+The reusable GitHub workflow remains a migration bridge until GitHub App
+ingress, result-triggered reporting, runner-side signature verification, and a
+durable service deployment are configured. It derives the central revision from
+the reusable workflow identity and the repository contract revision from the
+caller workflow identity; neither is a caller-provided input.
+
 ## Security invariants
 
 - Keep this repository private. The self-hosted runner group must allow only

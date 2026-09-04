@@ -2,13 +2,6 @@ name: Repository Apple-silicon CI
 
 on:
   workflow_call:
-    inputs:
-      control_plane_sha:
-        required: true
-        type: string
-      repository_contract_sha:
-        required: true
-        type: string
 
 permissions: {}
 
@@ -32,9 +25,11 @@ jobs:
     steps:
       - name: Verify immutable control-plane revision
         env:
-          CONTROL_PLANE_SHA: ${{ inputs.control_plane_sha }}
-          REPOSITORY_CONTRACT_SHA: ${{ inputs.repository_contract_sha }}
+          CONTROL_PLANE_REPOSITORY: ${{ job.workflow_repository }}
+          CONTROL_PLANE_SHA: ${{ job.workflow_sha }}
+          REPOSITORY_CONTRACT_SHA: ${{ github.workflow_sha }}
         run: |
+          [[ "$CONTROL_PLANE_REPOSITORY" == Marvis-Labs/mlx-ci ]]
           [[ "$CONTROL_PLANE_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$REPOSITORY_CONTRACT_SHA" =~ ^[0-9a-f]{40}$ ]]
       - name: Verify maintainer permission
@@ -62,19 +57,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: orchestrator
-          repository: Marvis-Labs/mlx-ci
-          ref: ${{ inputs.control_plane_sha }}
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
           persist-credentials: false
       - name: Verify control-plane checkout
         env:
-          CONTROL_PLANE_SHA: ${{ inputs.control_plane_sha }}
+          CONTROL_PLANE_SHA: ${{ job.workflow_sha }}
         run: |
           [[ "$(git -C orchestrator rev-parse --verify HEAD^{commit})" == "$CONTROL_PLANE_SHA" ]]
           [[ -z "$(git -C orchestrator status --porcelain=v1 --untracked-files=all)" ]]
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: control
-          ref: ${{ inputs.repository_contract_sha }}
+          ref: ${{ github.workflow_sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -99,7 +94,7 @@ jobs:
         env:
           ATTEMPT_ID: ${{ github.run_id }}
           BASE_SHA: ${{ steps.pr.outputs.base }}
-          CONTRACT_SHA: ${{ inputs.repository_contract_sha }}
+          CONTRACT_SHA: ${{ github.workflow_sha }}
           HEAD_SHA: ${{ steps.pr.outputs.head }}
           REPOSITORY: ${{ github.repository }}
         run: |
@@ -153,7 +148,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: control
-          ref: ${{ inputs.repository_contract_sha }}
+          ref: ${{ github.workflow_sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -205,7 +200,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.repository_contract_sha }}
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:

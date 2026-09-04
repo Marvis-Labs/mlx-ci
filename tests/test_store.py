@@ -13,15 +13,15 @@ class StateStoreTests(unittest.TestCase):
         self.store = StateStore(Path(self.temporary_directory.name) / "state.sqlite3")
         self.store.initialize()
 
-    def test_active_attempts_coalesce_by_repository_pr_and_head(self):
-        first, coalesced = self.store.create_attempt(
+    def test_each_run_request_creates_an_independent_attempt(self):
+        first, replayed = self.store.create_attempt(
             self.request("request:1"),
             attempt_id="attempt:1",
             base_sha="a" * 40,
             head_sha="b" * 40,
             contract_sha="c" * 40,
         )
-        second, coalesced_again = self.store.create_attempt(
+        second, replayed_again = self.store.create_attempt(
             self.request("request:2"),
             attempt_id="attempt:2",
             base_sha="a" * 40,
@@ -29,9 +29,9 @@ class StateStoreTests(unittest.TestCase):
             contract_sha="c" * 40,
         )
 
-        self.assertFalse(coalesced)
-        self.assertTrue(coalesced_again)
-        self.assertEqual(second["attempt_id"], first["attempt_id"])
+        self.assertFalse(replayed)
+        self.assertFalse(replayed_again)
+        self.assertNotEqual(second["attempt_id"], first["attempt_id"])
 
     def test_completed_revision_can_start_a_new_attempt(self):
         self.create_attempt()
@@ -40,7 +40,7 @@ class StateStoreTests(unittest.TestCase):
             "attempt:1", "completed", now="2026-09-04T12:02:00Z"
         )
 
-        attempt, coalesced = self.store.create_attempt(
+        attempt, replayed = self.store.create_attempt(
             self.request("request:2"),
             attempt_id="attempt:2",
             base_sha="a" * 40,
@@ -48,12 +48,12 @@ class StateStoreTests(unittest.TestCase):
             contract_sha="c" * 40,
         )
 
-        self.assertFalse(coalesced)
+        self.assertFalse(replayed)
         self.assertEqual(attempt["attempt_id"], "attempt:2")
 
     def test_request_delivery_is_idempotent(self):
         first = self.create_attempt()
-        replay, coalesced = self.store.create_attempt(
+        replay, replayed = self.store.create_attempt(
             self.request("request:1"),
             attempt_id="ignored-attempt",
             base_sha="a" * 40,
@@ -61,12 +61,12 @@ class StateStoreTests(unittest.TestCase):
             contract_sha="c" * 40,
         )
 
-        self.assertTrue(coalesced)
+        self.assertTrue(replayed)
         self.assertEqual(replay, first)
 
-    def test_coalesced_delivery_replay_stays_bound_after_completion(self):
+    def test_delivery_replay_stays_bound_after_completion(self):
         first = self.create_attempt()
-        coalesced, _ = self.store.create_attempt(
+        second, _ = self.store.create_attempt(
             self.request("request:2"),
             attempt_id="attempt:2",
             base_sha="a" * 40,
@@ -74,10 +74,10 @@ class StateStoreTests(unittest.TestCase):
             contract_sha="c" * 40,
         )
         self.store.set_attempt_state(
-            "attempt:1", "cancelled", now="2026-09-04T12:01:00Z"
+            "attempt:2", "cancelled", now="2026-09-04T12:01:00Z"
         )
 
-        replay, was_coalesced = self.store.create_attempt(
+        replay, was_replayed = self.store.create_attempt(
             self.request("request:2"),
             attempt_id="attempt:3",
             base_sha="a" * 40,
@@ -85,9 +85,9 @@ class StateStoreTests(unittest.TestCase):
             contract_sha="c" * 40,
         )
 
-        self.assertEqual(coalesced, first)
-        self.assertTrue(was_coalesced)
-        self.assertEqual(replay["attempt_id"], "attempt:1")
+        self.assertNotEqual(second, first)
+        self.assertTrue(was_replayed)
+        self.assertEqual(replay["attempt_id"], "attempt:2")
 
     def test_request_id_reuse_with_different_content_is_rejected(self):
         self.create_attempt()
