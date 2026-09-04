@@ -12,6 +12,7 @@ from mlx_ci.contracts import (
     validate_result,
     validate_runner,
     validate_runner_manifest,
+    validate_runner_response,
     validate_work_plan,
     wrap_runner_manifest,
 )
@@ -20,12 +21,14 @@ from mlx_ci.control_plane import (
     SubmissionDisposition,
     SubmissionReceipt,
 )
-from mlx_ci.scheduler import Assignment, Scheduler
+from mlx_ci.scheduler import Assignment, QueueDiagnostic, QueueReason, Scheduler
 from mlx_ci.store import StateConflict, StateError, StateStore
 
 __all__ = [
     "ContractError",
     "ControlPlane",
+    "QueueDiagnostic",
+    "QueueReason",
     "Assignment",
     "Scheduler",
     "SubmissionDisposition",
@@ -42,6 +45,7 @@ __all__ = [
     "validate_result",
     "validate_runner",
     "validate_runner_manifest",
+    "validate_runner_response",
     "validate_work_plan",
     "wrap_runner_manifest",
     "StateConflict",

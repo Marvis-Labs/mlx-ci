@@ -14,6 +14,7 @@ from mlx_ci.contracts import (
     validate_request,
     validate_result,
     validate_runner,
+    validate_runner_response,
     validate_work_plan,
     wrap_runner_manifest,
 )
@@ -132,6 +133,55 @@ class ContractTests(unittest.TestCase):
         }
 
         self.assertEqual(validate_runner(runner), runner)
+
+    def test_runner_contract_requires_execution_profile(self):
+        runner = {
+            "schema_version": 1,
+            "kind": "runner_capability",
+            "runner_id": "mini-1",
+            "labels": ["apple-silicon"],
+            "memory_gib": 16,
+            "available_disk_gib": 128,
+            "status": "online",
+            "heartbeat_at": "2026-09-04T12:00:00Z",
+        }
+
+        with self.assertRaisesRegex(ContractError, "execution profile"):
+            validate_runner(runner)
+
+    def test_runner_response_rejects_unclassified_decline(self):
+        response = {
+            "schema_version": 1,
+            "kind": "runner_response",
+            "lease_id": "lease:1",
+            "attempt_id": "attempt:1",
+            "job_id": "task:first",
+            "runner_id": "mini-1",
+            "generation": "generation:1",
+            "decision": "declined",
+            "reason": "raw_internal_error",
+            "observed": {},
+        }
+
+        with self.assertRaisesRegex(ContractError, "reason"):
+            validate_runner_response(response)
+
+    def test_runner_response_rejects_raw_observation_fields(self):
+        response = {
+            "schema_version": 1,
+            "kind": "runner_response",
+            "lease_id": "lease:1",
+            "attempt_id": "attempt:1",
+            "job_id": "task:first",
+            "runner_id": "mini-1",
+            "generation": "generation:1",
+            "decision": "declined",
+            "reason": "unhealthy",
+            "observed": {"error": "raw device output"},
+        }
+
+        with self.assertRaisesRegex(ContractError, "unsupported fields"):
+            validate_runner_response(response)
 
     def test_lease_rejects_expiry_before_heartbeat(self):
         lease = self.lease()

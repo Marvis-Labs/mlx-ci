@@ -18,6 +18,7 @@ from mlx_ci.contracts import (
     validate_request,
     validate_result,
     validate_runner,
+    validate_runner_response,
     validate_work_plan,
     wrap_runner_manifest,
 )
@@ -147,6 +148,13 @@ class StateStore:
                     FOREIGN KEY (attempt_id, job_id)
                         REFERENCES jobs(attempt_id, job_id),
                     FOREIGN KEY (runner_id) REFERENCES runners(runner_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS runner_responses (
+                    lease_id TEXT PRIMARY KEY,
+                    response_json TEXT NOT NULL,
+                    received_at TEXT NOT NULL,
+                    FOREIGN KEY (lease_id) REFERENCES leases(lease_id)
                 );
 
                 CREATE TABLE IF NOT EXISTS results (
@@ -376,6 +384,45 @@ class StateStore:
                 "SELECT plan_json FROM plans WHERE attempt_id = ?", (attempt_id,)
             ).fetchone()
         return json.loads(row["plan_json"]) if row is not None else None
+
+    def queue_facts(self, attempt_id: str, job_id: str) -> dict[str, Any]:
+        _identifier(attempt_id, "attempt_id")
+        _identifier(job_id, "job_id")
+        with closing(self._connect()) as connection:
+            job = connection.execute(
+                """
+                SELECT attempt_id, job_id, state, required_memory_gib,
+                       required_disk_gib
+                FROM jobs WHERE attempt_id = ? AND job_id = ?
+                """,
+                (attempt_id, job_id),
+            ).fetchone()
+            if job is None:
+                raise StateError("job does not exist")
+            runners = connection.execute(
+                """
+                SELECT
+                    runners.runner_id,
+                    runners.memory_gib,
+                    runners.available_disk_gib,
+                    runners.status,
+                    runners.heartbeat_at,
+                    EXISTS (
+                        SELECT 1 FROM leases
+                        WHERE leases.runner_id = runners.runner_id
+                          AND leases.released_at IS NULL
+                    ) AS leased,
+                    EXISTS (
+                        SELECT 1 FROM rejections
+                        WHERE rejections.attempt_id = ?
+                          AND rejections.job_id = ?
+                          AND rejections.runner_id = runners.runner_id
+                    ) AS rejected
+                FROM runners ORDER BY runners.runner_id
+                """,
+                (attempt_id, job_id),
+            ).fetchall()
+        return {"job": dict(job), "runners": [dict(runner) for runner in runners]}
 
     def list_jobs(self, *, attempt_id: str | None = None) -> list[dict[str, Any]]:
         query = "SELECT * FROM jobs"
@@ -650,6 +697,62 @@ class StateStore:
                 (now, result["lease_id"]),
             )
         return result
+
+    def record_runner_response(
+        self, response: dict[str, Any], *, now: str
+    ) -> dict[str, Any]:
+        response = validate_runner_response(response)
+        current_time = _parse_timestamp(now, "now")
+        serialized = canonical_json(response).decode()
+        with self._transaction() as connection:
+            existing = connection.execute(
+                "SELECT response_json FROM runner_responses WHERE lease_id = ?",
+                (response["lease_id"],),
+            ).fetchone()
+            if existing is not None:
+                if existing["response_json"] != serialized:
+                    raise StateConflict("runner response changed after submission")
+                return response
+
+            self._reap_expired(connection, now)
+            lease = self._owned_lease(
+                connection,
+                response["lease_id"],
+                runner_id=response["runner_id"],
+                generation=response["generation"],
+            )
+            for field in ("attempt_id", "job_id"):
+                if response[field] != lease[field]:
+                    raise StateConflict(f"runner response {field} does not match lease")
+            if current_time < _parse_timestamp(lease["heartbeat_at"], "heartbeat_at"):
+                raise StateConflict("runner response predates its lease heartbeat")
+
+            connection.execute(
+                "INSERT INTO runner_responses VALUES (?, ?, ?)",
+                (response["lease_id"], serialized, now),
+            )
+            if response["decision"] == "accepted":
+                connection.execute(
+                    "UPDATE leases SET heartbeat_at = ? WHERE lease_id = ?",
+                    (now, response["lease_id"]),
+                )
+            else:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO rejections (
+                        attempt_id, job_id, runner_id, reason, created_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        lease["attempt_id"],
+                        lease["job_id"],
+                        lease["runner_id"],
+                        response["reason"],
+                        now,
+                    ),
+                )
+                self._release_lease(connection, lease, reason="rejected", now=now)
+        return response
 
     def reap_expired(self, *, now: str) -> int:
         _parse_timestamp(now, "now")

@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from mlx_ci.contracts import seal_manifest, seal_result
-from mlx_ci.scheduler import Scheduler
+from mlx_ci.scheduler import QueueReason, Scheduler
 from mlx_ci.store import StateConflict, StateStore
 
 NOW = datetime(2026, 9, 4, 12, 0, tzinfo=UTC)
@@ -46,6 +46,45 @@ class SchedulerTests(unittest.TestCase):
 
         self.assertEqual(second.lease["runner_id"], "studio")
 
+    def test_runner_decline_contract_escalates_work(self):
+        self.queue_job(memory_gib=8)
+        self.add_runner("studio", memory_gib=64)
+        self.add_runner("mini", memory_gib=16)
+        first = self.scheduler.dispatch(at=NOW)
+
+        self.scheduler.respond(
+            self.response(first, decision="declined", reason="insufficient_memory"),
+            at=NOW + timedelta(seconds=5),
+        )
+        second = self.scheduler.dispatch(at=NOW + timedelta(seconds=6))
+
+        self.assertEqual(second.lease["runner_id"], "studio")
+
+    def test_runner_acceptance_is_idempotent_and_immutable(self):
+        self.queue_job(memory_gib=8)
+        self.add_runner("mini", memory_gib=16)
+        assignment = self.scheduler.dispatch(at=NOW)
+        response = self.response(assignment, decision="accepted")
+
+        first = self.scheduler.respond(response, at=NOW + timedelta(seconds=5))
+        replay = self.scheduler.respond(response, at=NOW + timedelta(seconds=6))
+
+        self.assertEqual(first, replay)
+        changed = dict(response)
+        changed["observed"] = {"memory_gib": 8}
+        with self.assertRaisesRegex(StateConflict, "changed"):
+            self.scheduler.respond(changed, at=NOW + timedelta(seconds=7))
+
+    def test_runner_response_must_match_lease_identity(self):
+        self.queue_job(memory_gib=8)
+        self.add_runner("mini", memory_gib=16)
+        assignment = self.scheduler.dispatch(at=NOW)
+        response = self.response(assignment, decision="accepted")
+        response["job_id"] = "task:forged"
+
+        with self.assertRaisesRegex(StateConflict, "job_id"):
+            self.scheduler.respond(response, at=NOW + timedelta(seconds=5))
+
     def test_stale_offline_and_undersized_runners_are_excluded(self):
         self.queue_job(memory_gib=32)
         self.add_runner(
@@ -67,6 +106,47 @@ class SchedulerTests(unittest.TestCase):
 
         self.assertIsNone(assignment)
         self.assertEqual(self.store.list_jobs()[0]["state"], "queued")
+
+    def test_queue_diagnostic_distinguishes_absent_and_insufficient_capacity(self):
+        self.queue_job(memory_gib=64)
+
+        absent = self.scheduler.diagnose("attempt:1", "task:first", at=NOW)
+        self.add_runner("mini", memory_gib=16)
+        undersized = self.scheduler.diagnose("attempt:1", "task:first", at=NOW)
+
+        self.assertEqual(absent.reason, QueueReason.NO_RUNNERS)
+        self.assertTrue(absent.retryable)
+        self.assertEqual(undersized.reason, QueueReason.INSUFFICIENT_RESOURCES)
+        self.assertFalse(undersized.retryable)
+
+    def test_queue_diagnostic_distinguishes_busy_and_exhausted_candidates(self):
+        self.queue_job(memory_gib=8)
+        self.queue_job(job_id="task:second", memory_gib=8)
+        self.add_runner("mini", memory_gib=16)
+        first = self.scheduler.dispatch(at=NOW)
+
+        busy = self.scheduler.diagnose("attempt:1", "task:second", at=NOW)
+        self.scheduler.respond(
+            self.response(first, decision="declined", reason="busy"),
+            at=NOW + timedelta(seconds=5),
+        )
+        exhausted = self.scheduler.diagnose(
+            "attempt:1", "task:first", at=NOW + timedelta(seconds=6)
+        )
+
+        self.assertEqual(busy.reason, QueueReason.RUNNERS_BUSY)
+        self.assertTrue(busy.retryable)
+        self.assertEqual(exhausted.reason, QueueReason.CANDIDATES_EXHAUSTED)
+        self.assertFalse(exhausted.retryable)
+
+    def test_queue_diagnostic_marks_stale_inventory_retryable(self):
+        self.queue_job(memory_gib=8)
+        self.add_runner("mini", memory_gib=16, heartbeat=NOW - timedelta(minutes=3))
+
+        diagnostic = self.scheduler.diagnose("attempt:1", "task:first", at=NOW)
+
+        self.assertEqual(diagnostic.reason, QueueReason.NO_LIVE_RUNNERS)
+        self.assertTrue(diagnostic.retryable)
 
     def test_expired_lease_requeues_work_and_releases_runner(self):
         self.queue_job(memory_gib=8)
@@ -291,6 +371,21 @@ class SchedulerTests(unittest.TestCase):
             "evidence": {"synthetic": {"outcome": "passed"}},
             "started_at": "2026-09-04T12:00:00Z",
             "finished_at": "2026-09-04T12:01:00Z",
+        }
+
+    @staticmethod
+    def response(assignment, *, decision, reason=None):
+        return {
+            "schema_version": 1,
+            "kind": "runner_response",
+            "lease_id": assignment.lease["lease_id"],
+            "attempt_id": assignment.lease["attempt_id"],
+            "job_id": assignment.lease["job_id"],
+            "runner_id": assignment.lease["runner_id"],
+            "generation": assignment.lease["generation"],
+            "decision": decision,
+            "reason": reason,
+            "observed": {"memory_gib": 16, "available_disk_gib": 128},
         }
 
 

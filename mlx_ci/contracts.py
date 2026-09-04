@@ -296,6 +296,8 @@ def validate_runner(value: Mapping[str, Any]) -> dict[str, Any]:
         for label in labels
     ):
         raise ContractError("runner label is invalid")
+    if not {"apple-silicon", "mlx-ci-sandbox-v1"}.issubset(labels):
+        raise ContractError("runner lacks the required execution profile")
     _positive_integer(value, "memory_gib")
     _non_negative_integer(value, "available_disk_gib")
     if value.get("status") not in {"online", "draining", "offline"}:
@@ -328,6 +330,72 @@ def validate_lease(value: Mapping[str, Any]) -> dict[str, Any]:
     expires = _timestamp(value, "expires_at")
     if not acquired <= heartbeat < expires:
         raise ContractError("lease timestamps are not ordered")
+    return dict(value)
+
+
+def validate_runner_response(value: Mapping[str, Any]) -> dict[str, Any]:
+    _exact_fields(
+        value,
+        {
+            "schema_version",
+            "kind",
+            "lease_id",
+            "attempt_id",
+            "job_id",
+            "runner_id",
+            "generation",
+            "decision",
+            "reason",
+            "observed",
+        },
+    )
+    _header(value, "runner_response")
+    for field in ("lease_id", "attempt_id", "job_id", "runner_id", "generation"):
+        _identifier(value, field)
+    decision = value.get("decision")
+    reason = value.get("reason")
+    if decision == "accepted":
+        if reason is not None:
+            raise ContractError("accepted runner response cannot have a reason")
+    elif decision == "declined":
+        if reason not in {
+            "busy",
+            "insufficient_memory",
+            "insufficient_disk",
+            "thermal",
+            "unhealthy",
+            "unsupported",
+        }:
+            raise ContractError("runner decline reason is invalid")
+    else:
+        raise ContractError("runner decision is invalid")
+    observed = value.get("observed")
+    if not isinstance(observed, Mapping):
+        raise ContractError("runner observations must be an object")
+    unexpected = set(observed) - {
+        "memory_gib",
+        "available_disk_gib",
+        "thermal_state",
+        "health",
+    }
+    if unexpected:
+        raise ContractError("runner observations contain unsupported fields")
+    if "memory_gib" in observed:
+        _positive_integer(observed, "memory_gib")
+    if "available_disk_gib" in observed:
+        _non_negative_integer(observed, "available_disk_gib")
+    if observed.get("thermal_state", "unknown") not in {
+        "nominal",
+        "fair",
+        "serious",
+        "critical",
+        "unknown",
+    }:
+        raise ContractError("runner thermal_state is invalid")
+    if observed.get("health", "unknown") not in {"healthy", "unhealthy", "unknown"}:
+        raise ContractError("runner health is invalid")
+    if len(canonical_json(observed)) > 64_000:
+        raise ContractError("runner observations exceed the contract size limit")
     return dict(value)
 
 
