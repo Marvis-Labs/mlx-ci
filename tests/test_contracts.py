@@ -1,4 +1,6 @@
 import base64
+import hashlib
+import json
 import unittest
 
 from mlx_ci.contracts import (
@@ -6,12 +8,14 @@ from mlx_ci.contracts import (
     canonical_digest,
     seal_manifest,
     seal_result,
+    unwrap_runner_manifest,
     validate_envelope,
     validate_job,
     validate_lease,
     validate_request,
     validate_result,
     validate_runner,
+    wrap_runner_manifest,
 )
 
 
@@ -51,6 +55,31 @@ class ContractTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ContractError, "full lowercase commit"):
             seal_manifest(job)
+
+    def test_runner_manifest_round_trip_preserves_repository_contract(self):
+        runner = self.runner_manifest()
+
+        wrapped = wrap_runner_manifest(runner, attempt_id="attempt:1")
+
+        self.assertEqual(wrapped["job_id"], runner["id"])
+        self.assertEqual(wrapped["payload"], {"runner_manifest": runner})
+        self.assertEqual(unwrap_runner_manifest(wrapped), runner)
+
+    def test_runner_manifest_wrapper_rejects_identity_mismatch(self):
+        wrapped = wrap_runner_manifest(self.runner_manifest(), attempt_id="attempt:1")
+        wrapped["required_memory_gib"] = 64
+        wrapped = seal_manifest(wrapped)
+
+        with self.assertRaisesRegex(ContractError, "does not match"):
+            unwrap_runner_manifest(wrapped)
+
+    def test_runner_manifest_wrapper_rejects_inner_mutation(self):
+        wrapped = wrap_runner_manifest(self.runner_manifest(), attempt_id="attempt:1")
+        wrapped["payload"]["runner_manifest"]["subject"] = "other"
+        wrapped = seal_manifest(wrapped)
+
+        with self.assertRaisesRegex(ContractError, "runner_manifest digest"):
+            unwrap_runner_manifest(wrapped)
 
     def test_signed_envelope_shape(self):
         envelope = {
@@ -152,6 +181,30 @@ class ContractTests(unittest.TestCase):
             "required_disk_gib": 8,
             "payload": {"checkpoint": "mlx-community/example"},
         }
+
+    @staticmethod
+    def runner_manifest():
+        value = {
+            "id": "models:family",
+            "repository": "Marvis-Labs/example-models",
+            "base_sha": "a" * 40,
+            "head_sha": "b" * 40,
+            "contract_sha": "c" * 40,
+            "component": "models",
+            "subject": "family",
+            "work_type": "FamilyPath",
+            "phases": ["synthetic", "checkpoint"],
+            "required_memory_gib": 8,
+            "required_disk_gib": 4,
+            "repository_payload": {"scenario": "small"},
+        }
+        value["manifest_digest"] = (
+            "sha256:"
+            + hashlib.sha256(
+                json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
+            ).hexdigest()
+        )
+        return value
 
     @staticmethod
     def lease():

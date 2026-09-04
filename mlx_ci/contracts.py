@@ -130,6 +130,54 @@ def validate_job(
     return dict(value)
 
 
+def wrap_runner_manifest(
+    value: Mapping[str, Any], *, attempt_id: str
+) -> dict[str, Any]:
+    manifest = _validate_runner_manifest(value)
+    return seal_manifest(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "kind": "work_manifest",
+            "job_id": manifest["id"],
+            "attempt_id": attempt_id,
+            "repository": manifest["repository"],
+            "base_sha": manifest["base_sha"],
+            "head_sha": manifest["head_sha"],
+            "contract_sha": manifest["contract_sha"],
+            "component": manifest["component"],
+            "subject": manifest["subject"],
+            "phases": manifest["phases"],
+            "required_memory_gib": manifest["required_memory_gib"],
+            "required_disk_gib": manifest["required_disk_gib"],
+            "payload": {"runner_manifest": manifest},
+        }
+    )
+
+
+def unwrap_runner_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
+    job = validate_job(value)
+    payload = job["payload"]
+    if set(payload) != {"runner_manifest"}:
+        raise ContractError("runner payload must contain only runner_manifest")
+    manifest = _validate_runner_manifest(payload["runner_manifest"])
+    identities = {
+        "job_id": "id",
+        "repository": "repository",
+        "base_sha": "base_sha",
+        "head_sha": "head_sha",
+        "contract_sha": "contract_sha",
+        "component": "component",
+        "subject": "subject",
+        "phases": "phases",
+        "required_memory_gib": "required_memory_gib",
+        "required_disk_gib": "required_disk_gib",
+    }
+    for outer, inner in identities.items():
+        if job[outer] != manifest[inner]:
+            raise ContractError(f"runner manifest {inner} does not match {outer}")
+    return manifest
+
+
 def validate_envelope(value: Mapping[str, Any]) -> dict[str, Any]:
     _exact_fields(
         value,
@@ -301,6 +349,65 @@ def _exact_fields(value: Mapping[str, Any], expected: set[str]) -> None:
         raise ContractError(
             f"contract fields differ; missing={missing}, unexpected={unexpected}"
         )
+
+
+def _validate_runner_manifest(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ContractError("runner_manifest must be an object")
+    manifest = dict(value)
+    required = {
+        "id",
+        "repository",
+        "base_sha",
+        "head_sha",
+        "contract_sha",
+        "component",
+        "subject",
+        "phases",
+        "required_memory_gib",
+        "required_disk_gib",
+        "manifest_digest",
+    }
+    missing = sorted(required - set(manifest))
+    if missing:
+        raise ContractError(f"runner_manifest is missing fields: {missing}")
+    for field in ("id", "component", "subject"):
+        _identifier(manifest, field)
+    _repository(manifest, "repository")
+    for field in ("base_sha", "head_sha", "contract_sha"):
+        _commit(manifest, field)
+    phases = manifest["phases"]
+    if (
+        not isinstance(phases, list)
+        or not phases
+        or len(phases) > 16
+        or len(phases) != len(set(phases))
+        or any(
+            not isinstance(phase, str) or LABEL_PATTERN.fullmatch(phase) is None
+            for phase in phases
+        )
+    ):
+        raise ContractError("runner_manifest phases are invalid")
+    _positive_integer(manifest, "required_memory_gib")
+    _positive_integer(manifest, "required_disk_gib")
+    _digest(manifest, "manifest_digest")
+    unsigned = dict(manifest)
+    supplied = unsigned.pop("manifest_digest")
+    try:
+        encoded = json.dumps(
+            _json_value(unsigned),
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    except (RecursionError, TypeError, ValueError) as error:
+        raise ContractError("runner_manifest must contain JSON values") from error
+    expected = "sha256:" + hashlib.sha256(encoded).hexdigest()
+    if supplied != expected:
+        raise ContractError("runner_manifest digest does not match")
+    if len(encoded) > 1_000_000:
+        raise ContractError("runner_manifest exceeds the contract size limit")
+    return manifest
 
 
 def _header(value: Mapping[str, Any], kind: str) -> None:

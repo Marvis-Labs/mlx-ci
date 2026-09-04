@@ -58,9 +58,7 @@ class StateStore:
                     completed_at TEXT
                 );
 
-                CREATE UNIQUE INDEX IF NOT EXISTS one_active_attempt_per_revision
-                    ON attempts(repository, pull_request, head_sha)
-                    WHERE state IN ('queued', 'running');
+                DROP INDEX IF EXISTS one_active_attempt_per_revision;
 
                 CREATE TABLE IF NOT EXISTS requests (
                     request_id TEXT PRIMARY KEY,
@@ -205,25 +203,6 @@ class StateStore:
                             f"request_id was reused with a different {field}"
                         )
                 return _attempt_record(existing), True
-
-            active = connection.execute(
-                """
-                SELECT * FROM attempts
-                WHERE repository = ? AND pull_request = ? AND head_sha = ?
-                  AND state IN ('queued', 'running')
-                """,
-                (request["repository"], request["pull_request"], head_sha),
-            ).fetchone()
-            if active is not None:
-                connection.execute(
-                    "INSERT INTO requests VALUES (?, ?, ?)",
-                    (
-                        request["request_id"],
-                        active["attempt_id"],
-                        canonical_json(request).decode(),
-                    ),
-                )
-                return dict(active), True
 
             connection.execute(
                 """
