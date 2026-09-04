@@ -31,6 +31,21 @@ below strict.
 7. `mlx-ci` validates the structured result and publishes the repository-owned
    rendering to the originating pull request.
 
+## Repository interface
+
+Participating repositories expose three trusted modules under `ci/`:
+`ci.control` creates sealed flat runner manifests, `ci.work_executor` runs the
+registered phases, and `ci.report` renders validated results. They also provide
+`ci/hosted-requirements.txt` with hash-pinned dependencies for planning and
+reporting. The reusable workflow in this repository owns authorization,
+immutable checkouts, generic queue preparation, runner dispatch, artifacts, and
+comment delivery.
+
+The control plane wraps each repository manifest without interpreting its
+payload. Before dispatch it verifies that work identity, repository, revisions,
+phases, and resource requirements agree across both layers, then restores the
+original flat manifest expected by the generic runner.
+
 ## Security invariants
 
 - Keep this repository private. The self-hosted runner group must allow only

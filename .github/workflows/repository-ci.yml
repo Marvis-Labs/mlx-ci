@@ -1,0 +1,223 @@
+name: Repository Apple-silicon CI
+
+on:
+  workflow_call:
+    inputs:
+      control_plane_sha:
+        required: true
+        type: string
+      repository_contract_sha:
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  prepare:
+    if: >
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      github.event.comment.body == '/ci run' &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'),
+               github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      base: ${{ steps.pr.outputs.base }}
+      head: ${{ steps.pr.outputs.head }}
+      head_repository: ${{ steps.pr.outputs.head_repository }}
+      has_work: ${{ steps.queue.outputs.has_work || 'false' }}
+      matrix: ${{ steps.queue.outputs.matrix || '{"include":[]}' }}
+    steps:
+      - name: Verify immutable control-plane revision
+        env:
+          CONTROL_PLANE_SHA: ${{ inputs.control_plane_sha }}
+          REPOSITORY_CONTRACT_SHA: ${{ inputs.repository_contract_sha }}
+        run: |
+          [[ "$CONTROL_PLANE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$REPOSITORY_CONTRACT_SHA" =~ ^[0-9a-f]{40}$ ]]
+      - name: Verify maintainer permission
+        env:
+          COMMENTER: ${{ github.event.comment.user.login }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          permission="$(gh api "repos/$REPOSITORY/collaborators/$COMMENTER/permission" --jq .permission)"
+          [[ "$permission" == admin || "$permission" == maintain || "$permission" == write || "$permission" == push ]]
+      - name: Resolve immutable pull request revisions
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          gh api "repos/$REPOSITORY/pulls/$PR_NUMBER" \
+            --jq '"base=\(.base.sha)\nhead=\(.head.sha)\nhead_repository=\(.head.repo.full_name)"' >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: orchestrator
+          repository: Marvis-Labs/mlx-ci
+          ref: ${{ inputs.control_plane_sha }}
+          persist-credentials: false
+      - name: Verify control-plane checkout
+        env:
+          CONTROL_PLANE_SHA: ${{ inputs.control_plane_sha }}
+        run: |
+          [[ "$(git -C orchestrator rev-parse --verify HEAD^{commit})" == "$CONTROL_PLANE_SHA" ]]
+          [[ -z "$(git -C orchestrator status --porcelain=v1 --untracked-files=all)" ]]
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: control
+          ref: ${{ inputs.repository_contract_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: base
+          ref: ${{ steps.pr.outputs.base }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: head
+          repository: ${{ steps.pr.outputs.head_repository }}
+          ref: ${{ steps.pr.outputs.head }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install repository-owned hosted dependencies
+        run: python -m pip install --quiet --require-hashes -r control/ci/hosted-requirements.txt
+      - name: Build repository work manifests
+        env:
+          ATTEMPT_ID: ${{ github.run_id }}
+          BASE_SHA: ${{ steps.pr.outputs.base }}
+          CONTRACT_SHA: ${{ inputs.repository_contract_sha }}
+          HEAD_SHA: ${{ steps.pr.outputs.head }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          PYTHONPATH=control python -m ci.control \
+            --base base \
+            --head head \
+            --base-sha "$BASE_SHA" \
+            --head-sha "$HEAD_SHA" \
+            --contract-sha "$CONTRACT_SHA" \
+            --attempt-id "$ATTEMPT_ID" \
+            --repository "$REPOSITORY" \
+            --output control.json \
+            --jobs jobs
+      - name: Build generic queue
+        id: queue
+        run: |
+          PYTHONPATH=orchestrator python -m mlx_ci.repository_plan \
+            --control control.json \
+            --jobs jobs \
+            --output queue.json \
+            --github-output "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: repository-ci-control-${{ github.run_id }}
+          path: |
+            control.json
+            queue.json
+            jobs
+          retention-days: 1
+
+  device:
+    needs: prepare
+    if: needs.prepare.result == 'success' && needs.prepare.outputs.has_work == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on:
+      group: marvis-apple-silicon
+      labels:
+        - self-hosted
+        - marvis-ci
+        - apple-silicon
+        - mlx-ci-sandbox-v1
+        - ${{ matrix.memory_label }}
+    timeout-minutes: 90
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: control
+          ref: ${{ inputs.repository_contract_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: base
+          ref: ${{ needs.prepare.outputs.base }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: head
+          repository: ${{ needs.prepare.outputs.head_repository }}
+          ref: ${{ needs.prepare.outputs.head }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: repository-ci-control-${{ github.run_id }}
+          path: dispatch
+      - name: Execute sealed repository work
+        env:
+          JOB_FILE: ${{ matrix.file }}
+        run: |
+          /usr/local/libexec/marvis-ci/RUN_JOB.sh \
+            "$GITHUB_WORKSPACE/dispatch/jobs/$JOB_FILE" \
+            "$GITHUB_WORKSPACE/$JOB_FILE.result.json" \
+            -- /usr/bin/python3 -m ci.work_executor \
+            --job "$GITHUB_WORKSPACE/dispatch/jobs/$JOB_FILE" \
+            --control "$GITHUB_WORKSPACE/control" \
+            --base "$GITHUB_WORKSPACE/base" \
+            --head "$GITHUB_WORKSPACE/head"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: repository-ci-result-${{ github.run_id }}-${{ strategy.job-index }}
+          path: ${{ matrix.file }}.result.json
+          retention-days: 1
+
+  report:
+    needs: [prepare, device]
+    if: always() && needs.prepare.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.repository_contract_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: repository-ci-*-${{ github.run_id }}*
+          path: artifacts
+          merge-multiple: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install repository-owned hosted dependencies
+        run: python -m pip install --quiet --require-hashes -r ci/hosted-requirements.txt
+      - name: Render trusted repository report
+        run: python -m ci.report --control artifacts/control.json --results artifacts --output report.md
+      - name: Publish repository report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: gh api "repos/$REPOSITORY/issues/$PR_NUMBER/comments" -F body=@report.md
