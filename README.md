@@ -2,13 +2,13 @@
 
 Private trusted control plane for Marvis-Labs Apple-silicon CI.
 
-`mlx-ci` coordinates CI across `mlx-vlm` and `mlx-audio`. It does not own
-model-specific policy or device implementation. Keep the three boundaries
-below strict.
+`mlx-ci` coordinates CI for registered repositories. `mlx-vlm` and `mlx-audio`
+are its first consumers, but the control plane does not know about models,
+modalities, or repository-specific work types. Keep the boundaries below strict.
 
 | Repository | Owns |
 | --- | --- |
-| `mlx-vlm` and `mlx-audio` | Declarative change rules, model-family catalogs, pinned checkpoints, fixtures, component planners, probes, executors, correctness policy, resource estimates, result validation, and bot rendering under `ci/` |
+| Participating repositories | Change rules, domain catalogs, fixtures, planners, probes, executors, correctness policy, resource estimates, result validation, and bot rendering |
 | `mlx-ci` | GitHub App authorization, trusted orchestration, global queueing, runner inventory, smallest-fit selection, cross-repository leases, immutable attempts, retry and escalation, manifest signing, result transport, and PR status delivery |
 | `ci-runner` | Machine setup, runner registration, capability and heartbeat reporting, local atomic leases, checkpoint caching, asset staging, sandboxing, cleanup, and execution of sealed work manifests |
 

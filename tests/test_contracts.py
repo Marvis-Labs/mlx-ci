@@ -1,6 +1,4 @@
 import base64
-import hashlib
-import json
 import unittest
 
 from mlx_ci.contracts import (
@@ -8,6 +6,7 @@ from mlx_ci.contracts import (
     canonical_digest,
     seal_manifest,
     seal_result,
+    seal_work_plan,
     unwrap_runner_manifest,
     validate_envelope,
     validate_job,
@@ -15,6 +14,7 @@ from mlx_ci.contracts import (
     validate_request,
     validate_result,
     validate_runner,
+    validate_work_plan,
     wrap_runner_manifest,
 )
 
@@ -25,7 +25,7 @@ class ContractTests(unittest.TestCase):
             "schema_version": 1,
             "kind": "run_request",
             "request_id": "request:1",
-            "repository": "Marvis-Labs/mlx-vlm",
+            "repository": "Example/project-one",
             "pull_request": 7,
             "comment_id": 99,
             "requester": "maintainer",
@@ -80,6 +80,19 @@ class ContractTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ContractError, "runner_manifest digest"):
             unwrap_runner_manifest(wrapped)
+
+    def test_repository_work_plan_preserves_opaque_job_policy(self):
+        plan = seal_work_plan(self.work_plan())
+
+        self.assertEqual(validate_work_plan(plan), plan)
+        self.assertEqual(plan["jobs"][0]["work_type"], "RepositoryWork")
+
+    def test_repository_work_plan_rejects_duplicate_job_ids(self):
+        plan = self.work_plan()
+        plan["jobs"].append(dict(plan["jobs"][0]))
+
+        with self.assertRaisesRegex(ContractError, "unique"):
+            seal_work_plan(plan)
 
     def test_signed_envelope_shape(self):
         envelope = {
@@ -153,7 +166,7 @@ class ContractTests(unittest.TestCase):
             "schema_version": 1,
             "kind": "run_request",
             "request_id": "request:1",
-            "repository": "Marvis-Labs/mlx-vlm",
+            "repository": "Example/project-one",
             "pull_request": 7,
             "comment_id": 99,
             "requester": "maintainer",
@@ -168,43 +181,52 @@ class ContractTests(unittest.TestCase):
         return {
             "schema_version": 1,
             "kind": "work_manifest",
-            "job_id": "model_path:qwen2_vl",
+            "job_id": "task:first",
             "attempt_id": "attempt:1",
-            "repository": "Marvis-Labs/mlx-vlm",
+            "repository": "Example/project-one",
             "base_sha": "a" * 40,
             "head_sha": "b" * 40,
             "contract_sha": "c" * 40,
-            "component": "model_path",
-            "subject": "qwen2_vl",
-            "phases": ["synthetic", "hf_checkpoint"],
+            "component": "repository_component",
+            "subject": "first",
+            "phases": ["prepare", "execute"],
             "required_memory_gib": 16,
             "required_disk_gib": 8,
-            "payload": {"checkpoint": "mlx-community/example"},
+            "payload": {"runner_manifest": {"operation": "example"}},
         }
 
     @staticmethod
     def runner_manifest():
         value = {
-            "id": "models:family",
-            "repository": "Marvis-Labs/example-models",
+            "id": "task:first",
+            "repository": "Example/project-one",
             "base_sha": "a" * 40,
             "head_sha": "b" * 40,
             "contract_sha": "c" * 40,
-            "component": "models",
-            "subject": "family",
-            "work_type": "FamilyPath",
-            "phases": ["synthetic", "checkpoint"],
+            "component": "repository_component",
+            "subject": "first",
+            "work_type": "RepositoryWork",
+            "phases": ["prepare", "execute"],
             "required_memory_gib": 8,
             "required_disk_gib": 4,
-            "repository_payload": {"scenario": "small"},
+            "operation": "example",
         }
-        value["manifest_digest"] = (
-            "sha256:"
-            + hashlib.sha256(
-                json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
-            ).hexdigest()
-        )
+        value["manifest_digest"] = canonical_digest(value)
         return value
+
+    @classmethod
+    def work_plan(cls):
+        return {
+            "schema_version": 1,
+            "kind": "repository_work_plan",
+            "plan_id": "plan:1",
+            "repository": "Example/project-one",
+            "base_sha": "a" * 40,
+            "head_sha": "b" * 40,
+            "contract_sha": "c" * 40,
+            "jobs": [cls.runner_manifest()],
+            "metadata": {"planning_outcome": "ready"},
+        }
 
     @staticmethod
     def lease():
@@ -213,7 +235,7 @@ class ContractTests(unittest.TestCase):
             "kind": "runner_lease",
             "lease_id": "lease:1",
             "attempt_id": "attempt:1",
-            "job_id": "model_path:qwen2_vl",
+            "job_id": "task:first",
             "runner_id": "mini-1",
             "generation": "generation:1",
             "acquired_at": "2026-09-04T12:00:00Z",
@@ -226,9 +248,9 @@ class ContractTests(unittest.TestCase):
         return {
             "schema_version": 1,
             "kind": "work_result",
-            "job_id": "model_path:qwen2_vl",
+            "job_id": "task:first",
             "attempt_id": "attempt:1",
-            "repository": "Marvis-Labs/mlx-vlm",
+            "repository": "Example/project-one",
             "runner_id": "mini-1",
             "lease_id": "lease:1",
             "outcome": "passed",

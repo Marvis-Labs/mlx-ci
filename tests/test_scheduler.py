@@ -116,7 +116,7 @@ class SchedulerTests(unittest.TestCase):
         assignment = self.scheduler.dispatch(at=NOW)
         result = self.result(assignment)
         wrong_repository = dict(result)
-        wrong_repository["repository"] = "Marvis-Labs/mlx-audio"
+        wrong_repository["repository"] = "Example/project-two"
 
         with self.assertRaisesRegex(StateConflict, "repository"):
             self.scheduler.complete(
@@ -189,10 +189,10 @@ class SchedulerTests(unittest.TestCase):
     def test_queue_and_leases_are_global_across_repositories(self):
         self.queue_job(memory_gib=8)
         self.queue_job(
-            repository="Marvis-Labs/mlx-audio",
-            attempt_id="attempt:audio",
-            request_id="request:audio",
-            job_id="model_path:qwen3_tts",
+            repository="Example/project-two",
+            attempt_id="attempt:two",
+            request_id="request:two",
+            job_id="task:second",
             memory_gib=8,
         )
         self.add_runner("mini-1", memory_gib=16)
@@ -203,17 +203,17 @@ class SchedulerTests(unittest.TestCase):
 
         self.assertEqual(
             {first.manifest["repository"], second.manifest["repository"]},
-            {"Marvis-Labs/mlx-vlm", "Marvis-Labs/mlx-audio"},
+            {"Example/project-one", "Example/project-two"},
         )
         self.assertNotEqual(first.lease["runner_id"], second.lease["runner_id"])
 
     def queue_job(
         self,
         *,
-        repository="Marvis-Labs/mlx-vlm",
+        repository="Example/project-one",
         attempt_id="attempt:1",
         request_id="request:1",
-        job_id="model_path:qwen2_vl",
+        job_id="task:first",
         memory_gib,
     ):
         request = {
@@ -243,12 +243,12 @@ class SchedulerTests(unittest.TestCase):
                 "base_sha": "a" * 40,
                 "head_sha": "b" * 40,
                 "contract_sha": "c" * 40,
-                "component": "model_path",
+                "component": "repository_component",
                 "subject": job_id.rsplit(":", 1)[-1],
-                "phases": ["synthetic", "hf_checkpoint"],
+                "phases": ["prepare", "execute"],
                 "required_memory_gib": memory_gib,
                 "required_disk_gib": 8,
-                "payload": {"checkpoint": "mlx-community/example"},
+                "payload": {"operation": "example"},
             }
         )
         self.store.enqueue_jobs(attempt_id, [manifest], now="2026-09-04T12:00:00Z")

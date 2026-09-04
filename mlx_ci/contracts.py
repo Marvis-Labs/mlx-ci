@@ -133,7 +133,7 @@ def validate_job(
 def wrap_runner_manifest(
     value: Mapping[str, Any], *, attempt_id: str
 ) -> dict[str, Any]:
-    manifest = _validate_runner_manifest(value)
+    manifest = validate_runner_manifest(value)
     return seal_manifest(
         {
             "schema_version": SCHEMA_VERSION,
@@ -159,7 +159,7 @@ def unwrap_runner_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
     payload = job["payload"]
     if set(payload) != {"runner_manifest"}:
         raise ContractError("runner payload must contain only runner_manifest")
-    manifest = _validate_runner_manifest(payload["runner_manifest"])
+    manifest = validate_runner_manifest(payload["runner_manifest"])
     identities = {
         "job_id": "id",
         "repository": "repository",
@@ -176,6 +176,63 @@ def unwrap_runner_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
         if job[outer] != manifest[inner]:
             raise ContractError(f"runner manifest {inner} does not match {outer}")
     return manifest
+
+
+def seal_work_plan(value: Mapping[str, Any]) -> dict[str, Any]:
+    plan = dict(value)
+    plan.pop("plan_digest", None)
+    validate_work_plan(plan, require_digest=False)
+    plan["plan_digest"] = canonical_digest(plan)
+    return plan
+
+
+def validate_work_plan(
+    value: Mapping[str, Any], *, require_digest: bool = True
+) -> dict[str, Any]:
+    fields = {
+        "schema_version",
+        "kind",
+        "plan_id",
+        "repository",
+        "base_sha",
+        "head_sha",
+        "contract_sha",
+        "jobs",
+        "metadata",
+    }
+    if require_digest:
+        fields.add("plan_digest")
+    _exact_fields(value, fields)
+    _header(value, "repository_work_plan")
+    _identifier(value, "plan_id")
+    _repository(value, "repository")
+    for field in ("base_sha", "head_sha", "contract_sha"):
+        _commit(value, field)
+
+    jobs = value.get("jobs")
+    if not isinstance(jobs, list) or not jobs or len(jobs) > 256:
+        raise ContractError("work plan jobs must be a non-empty bounded list")
+    validated_jobs = [validate_runner_manifest(job) for job in jobs]
+    identifiers = [job["id"] for job in validated_jobs]
+    if len(identifiers) != len(set(identifiers)):
+        raise ContractError("work plan job ids must be unique")
+    for job in validated_jobs:
+        for field in ("repository", "base_sha", "head_sha", "contract_sha"):
+            if job[field] != value[field]:
+                raise ContractError(f"work plan job {field} does not match its plan")
+
+    metadata = value.get("metadata")
+    if not isinstance(metadata, Mapping):
+        raise ContractError("work plan metadata must be an object")
+    if len(canonical_json(metadata)) > 256_000:
+        raise ContractError("work plan metadata exceeds the contract size limit")
+    if require_digest:
+        _digest(value, "plan_digest")
+        unsigned = dict(value)
+        supplied = unsigned.pop("plan_digest")
+        if supplied != canonical_digest(unsigned):
+            raise ContractError("plan_digest does not match")
+    return dict(value)
 
 
 def validate_envelope(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -351,7 +408,7 @@ def _exact_fields(value: Mapping[str, Any], expected: set[str]) -> None:
         )
 
 
-def _validate_runner_manifest(value: Any) -> dict[str, Any]:
+def validate_runner_manifest(value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ContractError("runner_manifest must be an object")
     manifest = dict(value)

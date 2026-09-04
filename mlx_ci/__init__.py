@@ -3,6 +3,7 @@ from mlx_ci.contracts import (
     canonical_digest,
     seal_manifest,
     seal_result,
+    seal_work_plan,
     unwrap_runner_manifest,
     validate_envelope,
     validate_job,
@@ -10,18 +11,29 @@ from mlx_ci.contracts import (
     validate_request,
     validate_result,
     validate_runner,
+    validate_runner_manifest,
+    validate_work_plan,
     wrap_runner_manifest,
+)
+from mlx_ci.control_plane import (
+    ControlPlane,
+    SubmissionDisposition,
+    SubmissionReceipt,
 )
 from mlx_ci.scheduler import Assignment, Scheduler
 from mlx_ci.store import StateConflict, StateError, StateStore
 
 __all__ = [
     "ContractError",
+    "ControlPlane",
     "Assignment",
     "Scheduler",
+    "SubmissionDisposition",
+    "SubmissionReceipt",
     "canonical_digest",
     "seal_manifest",
     "seal_result",
+    "seal_work_plan",
     "unwrap_runner_manifest",
     "validate_envelope",
     "validate_job",
@@ -29,6 +41,8 @@ __all__ = [
     "validate_request",
     "validate_result",
     "validate_runner",
+    "validate_runner_manifest",
+    "validate_work_plan",
     "wrap_runner_manifest",
     "StateConflict",
     "StateError",

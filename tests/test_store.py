@@ -13,15 +13,15 @@ class StateStoreTests(unittest.TestCase):
         self.store = StateStore(Path(self.temporary_directory.name) / "state.sqlite3")
         self.store.initialize()
 
-    def test_each_run_request_starts_an_immutable_attempt(self):
-        first, replayed = self.store.create_attempt(
+    def test_active_attempts_coalesce_by_repository_pr_and_head(self):
+        first, coalesced = self.store.create_attempt(
             self.request("request:1"),
             attempt_id="attempt:1",
             base_sha="a" * 40,
             head_sha="b" * 40,
             contract_sha="c" * 40,
         )
-        second, replayed_again = self.store.create_attempt(
+        second, coalesced_again = self.store.create_attempt(
             self.request("request:2"),
             attempt_id="attempt:2",
             base_sha="a" * 40,
@@ -29,10 +29,9 @@ class StateStoreTests(unittest.TestCase):
             contract_sha="c" * 40,
         )
 
-        self.assertFalse(replayed)
-        self.assertFalse(replayed_again)
-        self.assertEqual(first["attempt_id"], "attempt:1")
-        self.assertEqual(second["attempt_id"], "attempt:2")
+        self.assertFalse(coalesced)
+        self.assertTrue(coalesced_again)
+        self.assertEqual(second["attempt_id"], first["attempt_id"])
 
     def test_completed_revision_can_start_a_new_attempt(self):
         self.create_attempt()
@@ -65,24 +64,30 @@ class StateStoreTests(unittest.TestCase):
         self.assertTrue(coalesced)
         self.assertEqual(replay, first)
 
-    def test_delivery_replay_stays_bound_after_completion(self):
+    def test_coalesced_delivery_replay_stays_bound_after_completion(self):
         first = self.create_attempt()
+        coalesced, _ = self.store.create_attempt(
+            self.request("request:2"),
+            attempt_id="attempt:2",
+            base_sha="a" * 40,
+            head_sha="b" * 40,
+            contract_sha="c" * 40,
+        )
         self.store.set_attempt_state(
             "attempt:1", "cancelled", now="2026-09-04T12:01:00Z"
         )
 
-        replay, was_replayed = self.store.create_attempt(
-            self.request("request:1"),
+        replay, was_coalesced = self.store.create_attempt(
+            self.request("request:2"),
             attempt_id="attempt:3",
             base_sha="a" * 40,
             head_sha="b" * 40,
             contract_sha="c" * 40,
         )
 
-        self.assertTrue(was_replayed)
+        self.assertEqual(coalesced, first)
+        self.assertTrue(was_coalesced)
         self.assertEqual(replay["attempt_id"], "attempt:1")
-        self.assertEqual(first["state"], "queued")
-        self.assertEqual(replay["state"], "cancelled")
 
     def test_request_id_reuse_with_different_content_is_rejected(self):
         self.create_attempt()
@@ -113,7 +118,7 @@ class StateStoreTests(unittest.TestCase):
     def test_jobs_are_validated_against_attempt_identity(self):
         self.create_attempt()
         manifest = self.job()
-        manifest["repository"] = "Marvis-Labs/mlx-audio"
+        manifest["repository"] = "Example/project-two"
 
         with self.assertRaisesRegex(StateConflict, "repository"):
             self.store.enqueue_jobs(
@@ -190,7 +195,7 @@ class StateStoreTests(unittest.TestCase):
             "schema_version": 1,
             "kind": "run_request",
             "request_id": request_id,
-            "repository": "Marvis-Labs/mlx-vlm",
+            "repository": "Example/project-one",
             "pull_request": 7,
             "comment_id": 99,
             "requester": "maintainer",
@@ -202,18 +207,18 @@ class StateStoreTests(unittest.TestCase):
         return {
             "schema_version": 1,
             "kind": "work_manifest",
-            "job_id": "model_path:qwen2_vl",
+            "job_id": "task:first",
             "attempt_id": "attempt:1",
-            "repository": "Marvis-Labs/mlx-vlm",
+            "repository": "Example/project-one",
             "base_sha": "a" * 40,
             "head_sha": "b" * 40,
             "contract_sha": "c" * 40,
-            "component": "model_path",
-            "subject": "qwen2_vl",
-            "phases": ["synthetic", "hf_checkpoint"],
+            "component": "repository_component",
+            "subject": "first",
+            "phases": ["prepare", "execute"],
             "required_memory_gib": 16,
             "required_disk_gib": 8,
-            "payload": {"checkpoint": "mlx-community/example"},
+            "payload": {"operation": "example"},
         }
 
     @staticmethod

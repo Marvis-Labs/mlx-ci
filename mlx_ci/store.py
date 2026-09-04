@@ -18,6 +18,8 @@ from mlx_ci.contracts import (
     validate_request,
     validate_result,
     validate_runner,
+    validate_work_plan,
+    wrap_runner_manifest,
 )
 
 ACTIVE_ATTEMPT_STATES = {"queued", "running"}
@@ -58,12 +60,23 @@ class StateStore:
                     completed_at TEXT
                 );
 
-                DROP INDEX IF EXISTS one_active_attempt_per_revision;
+                CREATE UNIQUE INDEX IF NOT EXISTS one_active_attempt_per_revision
+                    ON attempts(repository, pull_request, head_sha)
+                    WHERE state IN ('queued', 'running');
 
                 CREATE TABLE IF NOT EXISTS requests (
                     request_id TEXT PRIMARY KEY,
                     attempt_id TEXT NOT NULL,
                     request_json TEXT NOT NULL,
+                    FOREIGN KEY (attempt_id) REFERENCES attempts(attempt_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS plans (
+                    attempt_id TEXT PRIMARY KEY,
+                    plan_id TEXT NOT NULL,
+                    plan_json TEXT NOT NULL,
+                    plan_digest TEXT NOT NULL,
+                    submitted_at TEXT NOT NULL,
                     FOREIGN KEY (attempt_id) REFERENCES attempts(attempt_id)
                 );
 
@@ -159,69 +172,63 @@ class StateStore:
         contract_sha: str,
     ) -> tuple[dict[str, Any], bool]:
         request = validate_request(request)
-        _identifier(attempt_id, "attempt_id")
-        for name, value in (
-            ("base_sha", base_sha),
-            ("head_sha", head_sha),
-            ("contract_sha", contract_sha),
-        ):
-            _commit(value, name)
-
-        record = {
-            "attempt_id": attempt_id,
-            "request_id": request["request_id"],
-            "repository": request["repository"],
-            "pull_request": request["pull_request"],
-            "base_sha": base_sha,
-            "head_sha": head_sha,
-            "contract_sha": contract_sha,
-            "state": "queued",
-            "created_at": request["requested_at"],
-            "completed_at": None,
-        }
+        record = _new_attempt_record(
+            request,
+            attempt_id=attempt_id,
+            base_sha=base_sha,
+            head_sha=head_sha,
+            contract_sha=contract_sha,
+        )
         with self._transaction() as connection:
-            existing = connection.execute(
-                """
-                SELECT requests.request_json, attempts.*
-                FROM requests
-                JOIN attempts USING (attempt_id)
-                WHERE requests.request_id = ?
-                """,
-                (request["request_id"],),
-            ).fetchone()
-            if existing is not None:
-                persisted_request = json.loads(existing["request_json"])
-                if persisted_request != request:
-                    raise StateConflict("request_id was reused with different content")
-                for field, value in (
-                    ("base_sha", base_sha),
-                    ("head_sha", head_sha),
-                    ("contract_sha", contract_sha),
-                ):
-                    if existing[field] != value:
-                        raise StateConflict(
-                            f"request_id was reused with a different {field}"
-                        )
-                return _attempt_record(existing), True
+            return self._create_attempt(connection, request, record)
 
-            connection.execute(
+    def submit_work_plan(
+        self,
+        request: dict[str, Any],
+        plan: dict[str, Any],
+        *,
+        attempt_id: str,
+    ) -> tuple[dict[str, Any], bool, list[dict[str, Any]]]:
+        request = validate_request(request)
+        plan = validate_work_plan(plan)
+        if request["repository"] != plan["repository"]:
+            raise StateConflict("request repository does not match its work plan")
+        record = _new_attempt_record(
+            request,
+            attempt_id=attempt_id,
+            base_sha=plan["base_sha"],
+            head_sha=plan["head_sha"],
+            contract_sha=plan["contract_sha"],
+        )
+        with self._transaction() as connection:
+            attempt, reused = self._create_attempt(connection, request, record)
+            coalesced = reused and attempt["request_id"] != request["request_id"]
+            persisted_plan = connection.execute(
+                "SELECT 1 FROM plans WHERE attempt_id = ?",
+                (attempt["attempt_id"],),
+            ).fetchone()
+            if (not coalesced or persisted_plan is None) and attempt[
+                "state"
+            ] in ACTIVE_ATTEMPT_STATES:
+                self._record_plan(connection, attempt, plan, request["requested_at"])
+                manifests = [
+                    wrap_runner_manifest(job, attempt_id=attempt["attempt_id"])
+                    for job in plan["jobs"]
+                ]
+                self._enqueue_jobs(
+                    connection,
+                    attempt["attempt_id"],
+                    manifests,
+                    request["requested_at"],
+                )
+            jobs = connection.execute(
                 """
-                INSERT INTO attempts (
-                    attempt_id, request_id, repository, pull_request, base_sha,
-                    head_sha, contract_sha, state, created_at, completed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                SELECT * FROM jobs WHERE attempt_id = ?
+                ORDER BY created_at, attempt_id, job_id
                 """,
-                tuple(record.values()),
-            )
-            connection.execute(
-                "INSERT INTO requests VALUES (?, ?, ?)",
-                (
-                    request["request_id"],
-                    attempt_id,
-                    canonical_json(request).decode(),
-                ),
-            )
-        return record, False
+                (attempt["attempt_id"],),
+            ).fetchall()
+            return attempt, reused, [self._job_record(job) for job in jobs]
 
     def enqueue_jobs(
         self, attempt_id: str, manifests: Sequence[dict[str, Any]], *, now: str
@@ -233,47 +240,7 @@ class StateStore:
         _parse_timestamp(now, "now")
 
         with self._transaction() as connection:
-            attempt = connection.execute(
-                "SELECT * FROM attempts WHERE attempt_id = ?", (attempt_id,)
-            ).fetchone()
-            if attempt is None:
-                raise StateError("attempt does not exist")
-            if attempt["state"] not in ACTIVE_ATTEMPT_STATES:
-                raise StateConflict("cannot enqueue work for a terminal attempt")
-
-            for manifest in validated:
-                self._validate_manifest_identity(dict(attempt), manifest)
-                existing = connection.execute(
-                    """
-                    SELECT manifest_digest FROM jobs
-                    WHERE attempt_id = ? AND job_id = ?
-                    """,
-                    (attempt_id, manifest["job_id"]),
-                ).fetchone()
-                if existing is not None:
-                    if existing["manifest_digest"] != manifest["manifest_digest"]:
-                        raise StateConflict("job_id was reused with different content")
-                    continue
-                connection.execute(
-                    """
-                    INSERT INTO jobs (
-                        attempt_id, job_id, repository, manifest_json,
-                        manifest_digest, required_memory_gib, required_disk_gib,
-                        state, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
-                    """,
-                    (
-                        attempt_id,
-                        manifest["job_id"],
-                        manifest["repository"],
-                        canonical_json(manifest).decode(),
-                        manifest["manifest_digest"],
-                        manifest["required_memory_gib"],
-                        manifest["required_disk_gib"],
-                        now,
-                        now,
-                    ),
-                )
+            self._enqueue_jobs(connection, attempt_id, validated, now)
         return self.list_jobs(attempt_id=attempt_id)
 
     def record_runner(self, capability: dict[str, Any]) -> dict[str, Any]:
@@ -402,6 +369,13 @@ class StateStore:
                 (runner_id,),
             ).fetchone()
         return json.loads(row["capability_json"]) if row is not None else None
+
+    def get_plan(self, attempt_id: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT plan_json FROM plans WHERE attempt_id = ?", (attempt_id,)
+            ).fetchone()
+        return json.loads(row["plan_json"]) if row is not None else None
 
     def list_jobs(self, *, attempt_id: str | None = None) -> list[dict[str, Any]]:
         query = "SELECT * FROM jobs"
@@ -701,6 +675,148 @@ class StateStore:
         return json.loads(row["result_json"]) if row is not None else None
 
     @staticmethod
+    def _create_attempt(
+        connection: sqlite3.Connection,
+        request: dict[str, Any],
+        record: dict[str, Any],
+    ) -> tuple[dict[str, Any], bool]:
+        existing = connection.execute(
+            """
+            SELECT requests.request_json, attempts.*
+            FROM requests
+            JOIN attempts USING (attempt_id)
+            WHERE requests.request_id = ?
+            """,
+            (request["request_id"],),
+        ).fetchone()
+        if existing is not None:
+            if json.loads(existing["request_json"]) != request:
+                raise StateConflict("request_id was reused with different content")
+            for field in ("base_sha", "head_sha", "contract_sha"):
+                if existing[field] != record[field]:
+                    raise StateConflict(
+                        f"request_id was reused with a different {field}"
+                    )
+            return _attempt_record(existing), True
+
+        active = connection.execute(
+            """
+            SELECT * FROM attempts
+            WHERE repository = ? AND pull_request = ? AND head_sha = ?
+              AND state IN ('queued', 'running')
+            """,
+            (record["repository"], record["pull_request"], record["head_sha"]),
+        ).fetchone()
+        if active is not None:
+            connection.execute(
+                "INSERT INTO requests VALUES (?, ?, ?)",
+                (
+                    request["request_id"],
+                    active["attempt_id"],
+                    canonical_json(request).decode(),
+                ),
+            )
+            return dict(active), True
+
+        connection.execute(
+            """
+            INSERT INTO attempts (
+                attempt_id, request_id, repository, pull_request, base_sha,
+                head_sha, contract_sha, state, created_at, completed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            tuple(record.values()),
+        )
+        connection.execute(
+            "INSERT INTO requests VALUES (?, ?, ?)",
+            (
+                request["request_id"],
+                record["attempt_id"],
+                canonical_json(request).decode(),
+            ),
+        )
+        return record, False
+
+    @staticmethod
+    def _record_plan(
+        connection: sqlite3.Connection,
+        attempt: dict[str, Any],
+        plan: dict[str, Any],
+        submitted_at: str,
+    ) -> None:
+        for field in ("repository", "base_sha", "head_sha", "contract_sha"):
+            if plan[field] != attempt[field]:
+                raise StateConflict(f"work plan {field} does not match its attempt")
+        existing = connection.execute(
+            "SELECT plan_digest FROM plans WHERE attempt_id = ?",
+            (attempt["attempt_id"],),
+        ).fetchone()
+        if existing is not None:
+            if existing["plan_digest"] != plan["plan_digest"]:
+                raise StateConflict("attempt work plan changed after submission")
+            return
+        connection.execute(
+            "INSERT INTO plans VALUES (?, ?, ?, ?, ?)",
+            (
+                attempt["attempt_id"],
+                plan["plan_id"],
+                canonical_json(plan).decode(),
+                plan["plan_digest"],
+                submitted_at,
+            ),
+        )
+
+    @classmethod
+    def _enqueue_jobs(
+        cls,
+        connection: sqlite3.Connection,
+        attempt_id: str,
+        manifests: Sequence[dict[str, Any]],
+        now: str,
+    ) -> None:
+        attempt = connection.execute(
+            "SELECT * FROM attempts WHERE attempt_id = ?", (attempt_id,)
+        ).fetchone()
+        if attempt is None:
+            raise StateError("attempt does not exist")
+        if attempt["state"] not in ACTIVE_ATTEMPT_STATES:
+            raise StateConflict("cannot enqueue work for a terminal attempt")
+
+        for manifest in manifests:
+            cls._validate_manifest_identity(dict(attempt), manifest)
+            existing = connection.execute(
+                """
+                SELECT manifest_digest FROM jobs
+                WHERE attempt_id = ? AND job_id = ?
+                """,
+                (attempt_id, manifest["job_id"]),
+            ).fetchone()
+            if existing is not None:
+                if existing["manifest_digest"] != manifest["manifest_digest"]:
+                    raise StateConflict("job_id was reused with different content")
+                continue
+            connection.execute(
+                """
+                INSERT INTO jobs (
+                    attempt_id, job_id, repository, manifest_json,
+                    manifest_digest, required_memory_gib, required_disk_gib,
+                    state, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+                """,
+                (
+                    attempt_id,
+                    manifest["job_id"],
+                    manifest["repository"],
+                    canonical_json(manifest).decode(),
+                    manifest["manifest_digest"],
+                    manifest["required_memory_gib"],
+                    manifest["required_disk_gib"],
+                    now,
+                    now,
+                ),
+            )
+
+    @staticmethod
     def _job_record(row: sqlite3.Row) -> dict[str, Any]:
         record = dict(row)
         record["manifest"] = json.loads(record.pop("manifest_json"))
@@ -828,6 +944,35 @@ def _parse_timestamp(value: str, field: str) -> datetime:
 
 def _attempt_record(row: sqlite3.Row) -> dict[str, Any]:
     return {key: row[key] for key in row.keys() if key != "request_json"}
+
+
+def _new_attempt_record(
+    request: dict[str, Any],
+    *,
+    attempt_id: str,
+    base_sha: str,
+    head_sha: str,
+    contract_sha: str,
+) -> dict[str, Any]:
+    _identifier(attempt_id, "attempt_id")
+    for name, value in (
+        ("base_sha", base_sha),
+        ("head_sha", head_sha),
+        ("contract_sha", contract_sha),
+    ):
+        _commit(value, name)
+    return {
+        "attempt_id": attempt_id,
+        "request_id": request["request_id"],
+        "repository": request["repository"],
+        "pull_request": request["pull_request"],
+        "base_sha": base_sha,
+        "head_sha": head_sha,
+        "contract_sha": contract_sha,
+        "state": "queued",
+        "created_at": request["requested_at"],
+        "completed_at": None,
+    }
 
 
 def _job_state_for_outcome(outcome: str) -> str:
