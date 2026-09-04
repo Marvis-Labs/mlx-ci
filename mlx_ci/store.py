@@ -11,9 +11,12 @@ from typing import Any
 from mlx_ci.contracts import (
     COMMIT_PATTERN,
     IDENTIFIER_PATTERN,
+    TIMESTAMP_PATTERN,
     canonical_json,
     validate_job,
+    validate_lease,
     validate_request,
+    validate_result,
     validate_runner,
 )
 
@@ -97,6 +100,53 @@ class StateStore:
                         status IN ('online', 'draining', 'offline')
                     ),
                     heartbeat_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS leases (
+                    lease_id TEXT PRIMARY KEY,
+                    attempt_id TEXT NOT NULL,
+                    job_id TEXT NOT NULL,
+                    runner_id TEXT NOT NULL,
+                    generation TEXT NOT NULL,
+                    acquired_at TEXT NOT NULL,
+                    heartbeat_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    released_at TEXT,
+                    release_reason TEXT,
+                    FOREIGN KEY (attempt_id, job_id)
+                        REFERENCES jobs(attempt_id, job_id),
+                    FOREIGN KEY (runner_id) REFERENCES runners(runner_id)
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS one_active_lease_per_job
+                    ON leases(attempt_id, job_id)
+                    WHERE released_at IS NULL;
+
+                CREATE UNIQUE INDEX IF NOT EXISTS one_active_lease_per_runner
+                    ON leases(runner_id)
+                    WHERE released_at IS NULL;
+
+                CREATE TABLE IF NOT EXISTS rejections (
+                    attempt_id TEXT NOT NULL,
+                    job_id TEXT NOT NULL,
+                    runner_id TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (attempt_id, job_id, runner_id),
+                    FOREIGN KEY (attempt_id, job_id)
+                        REFERENCES jobs(attempt_id, job_id),
+                    FOREIGN KEY (runner_id) REFERENCES runners(runner_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS results (
+                    attempt_id TEXT NOT NULL,
+                    job_id TEXT NOT NULL,
+                    result_json TEXT NOT NULL,
+                    result_digest TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (attempt_id, job_id),
+                    FOREIGN KEY (attempt_id, job_id)
+                        REFERENCES jobs(attempt_id, job_id)
                 );
                 """
             )
@@ -316,6 +366,39 @@ class StateStore:
                 raise StateConflict("terminal attempts cannot transition")
             if current["state"] == "queued" and state == "completed":
                 raise StateConflict("queued attempts cannot complete directly")
+            if state == "completed":
+                unfinished = connection.execute(
+                    """
+                    SELECT COUNT(*) FROM jobs
+                    WHERE attempt_id = ? AND state IN ('queued', 'leased')
+                    """,
+                    (attempt_id,),
+                ).fetchone()[0]
+                if unfinished:
+                    raise StateConflict("attempt has unfinished jobs")
+            if state in {"failed", "cancelled"}:
+                leases = connection.execute(
+                    """
+                    SELECT * FROM leases
+                    WHERE attempt_id = ? AND released_at IS NULL
+                    """,
+                    (attempt_id,),
+                ).fetchall()
+                for lease in leases:
+                    connection.execute(
+                        """
+                        UPDATE leases SET released_at = ?, release_reason = ?
+                        WHERE lease_id = ?
+                        """,
+                        (now, f"attempt_{state}", lease["lease_id"]),
+                    )
+                connection.execute(
+                    """
+                    UPDATE jobs SET state = ?, updated_at = ?
+                    WHERE attempt_id = ? AND state IN ('queued', 'leased')
+                    """,
+                    (state, now, attempt_id),
+                )
             completed_at = now if state in TERMINAL_ATTEMPT_STATES else None
             connection.execute(
                 "UPDATE attempts SET state = ?, completed_at = ? WHERE attempt_id = ?",
@@ -352,11 +435,355 @@ class StateStore:
             rows = connection.execute(query, parameters).fetchall()
         return [self._job_record(row) for row in rows]
 
+    def claim_next(
+        self,
+        *,
+        lease_id: str,
+        generation: str,
+        now: str,
+        expires_at: str,
+        stale_before: str,
+    ) -> dict[str, Any] | None:
+        _identifier(lease_id, "lease_id")
+        _identifier(generation, "generation")
+        current_time = _parse_timestamp(now, "now")
+        if _parse_timestamp(expires_at, "expires_at") <= current_time:
+            raise StateError("lease expiry must be after acquisition")
+        _parse_timestamp(stale_before, "stale_before")
+
+        with self._transaction() as connection:
+            self._reap_expired(connection, now)
+            row = connection.execute(
+                """
+                SELECT
+                    jobs.attempt_id,
+                    jobs.job_id,
+                    jobs.manifest_json,
+                    runners.runner_id
+                FROM jobs
+                JOIN attempts USING (attempt_id)
+                JOIN runners
+                    ON runners.status = 'online'
+                   AND runners.memory_gib >= jobs.required_memory_gib
+                   AND runners.available_disk_gib >= jobs.required_disk_gib
+                   AND julianday(runners.heartbeat_at) >= julianday(?)
+                WHERE jobs.state = 'queued'
+                  AND attempts.state IN ('queued', 'running')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM leases
+                      WHERE leases.runner_id = runners.runner_id
+                        AND leases.released_at IS NULL
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM rejections
+                      WHERE rejections.attempt_id = jobs.attempt_id
+                        AND rejections.job_id = jobs.job_id
+                        AND rejections.runner_id = runners.runner_id
+                  )
+                ORDER BY
+                    jobs.created_at,
+                    jobs.attempt_id,
+                    jobs.job_id,
+                    runners.memory_gib,
+                    runners.available_disk_gib,
+                    runners.runner_id
+                LIMIT 1
+                """,
+                (stale_before,),
+            ).fetchone()
+            if row is None:
+                return None
+
+            lease = {
+                "schema_version": 1,
+                "kind": "runner_lease",
+                "lease_id": lease_id,
+                "attempt_id": row["attempt_id"],
+                "job_id": row["job_id"],
+                "runner_id": row["runner_id"],
+                "generation": generation,
+                "acquired_at": now,
+                "heartbeat_at": now,
+                "expires_at": expires_at,
+            }
+            validate_lease(lease)
+            connection.execute(
+                """
+                INSERT INTO leases (
+                    lease_id, attempt_id, job_id, runner_id, generation,
+                    acquired_at, heartbeat_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    lease_id,
+                    row["attempt_id"],
+                    row["job_id"],
+                    row["runner_id"],
+                    generation,
+                    now,
+                    now,
+                    expires_at,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE jobs SET state = 'leased', updated_at = ?
+                WHERE attempt_id = ? AND job_id = ?
+                """,
+                (now, row["attempt_id"], row["job_id"]),
+            )
+            connection.execute(
+                """
+                UPDATE attempts SET state = 'running'
+                WHERE attempt_id = ? AND state = 'queued'
+                """,
+                (row["attempt_id"],),
+            )
+            return {
+                "lease": lease,
+                "manifest": json.loads(row["manifest_json"]),
+            }
+
+    def renew_lease(
+        self,
+        lease_id: str,
+        *,
+        runner_id: str,
+        generation: str,
+        now: str,
+        expires_at: str,
+    ) -> dict[str, Any]:
+        current_time = _parse_timestamp(now, "now")
+        if _parse_timestamp(expires_at, "expires_at") <= current_time:
+            raise StateError("lease expiry must follow its heartbeat")
+        with self._transaction() as connection:
+            lease = self._owned_lease(
+                connection, lease_id, runner_id=runner_id, generation=generation
+            )
+            heartbeat_time = _parse_timestamp(lease["heartbeat_at"], "heartbeat_at")
+            expiry_time = _parse_timestamp(lease["expires_at"], "expires_at")
+            if expiry_time <= current_time:
+                self._reap_expired(connection, now)
+                raise StateConflict("lease has expired")
+            if current_time < heartbeat_time:
+                raise StateConflict("lease heartbeat cannot move backwards")
+            if _parse_timestamp(expires_at, "expires_at") <= expiry_time:
+                raise StateConflict("lease renewal must extend its expiry")
+            connection.execute(
+                """
+                UPDATE leases SET heartbeat_at = ?, expires_at = ?
+                WHERE lease_id = ?
+                """,
+                (now, expires_at, lease_id),
+            )
+            lease = connection.execute(
+                "SELECT * FROM leases WHERE lease_id = ?", (lease_id,)
+            ).fetchone()
+            return self._lease_record(lease)
+
+    def reject_lease(
+        self,
+        lease_id: str,
+        *,
+        runner_id: str,
+        generation: str,
+        reason: str,
+        now: str,
+    ) -> None:
+        _identifier(reason, "reason")
+        _parse_timestamp(now, "now")
+        with self._transaction() as connection:
+            self._reap_expired(connection, now)
+            lease = self._owned_lease(
+                connection, lease_id, runner_id=runner_id, generation=generation
+            )
+            if _parse_timestamp(now, "now") < _parse_timestamp(
+                lease["heartbeat_at"], "heartbeat_at"
+            ):
+                raise StateConflict("lease release cannot predate its heartbeat")
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO rejections (
+                    attempt_id, job_id, runner_id, reason, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    lease["attempt_id"],
+                    lease["job_id"],
+                    runner_id,
+                    reason,
+                    now,
+                ),
+            )
+            self._release_lease(connection, lease, reason="rejected", now=now)
+
+    def complete_lease(
+        self,
+        result: dict[str, Any],
+        *,
+        generation: str,
+        now: str,
+    ) -> dict[str, Any]:
+        result = validate_result(result)
+        _identifier(generation, "generation")
+        _parse_timestamp(now, "now")
+        with self._transaction() as connection:
+            existing = connection.execute(
+                """
+                SELECT result_json, result_digest FROM results
+                WHERE attempt_id = ? AND job_id = ?
+                """,
+                (result["attempt_id"], result["job_id"]),
+            ).fetchone()
+            if existing is not None:
+                if existing["result_digest"] != result["result_digest"]:
+                    raise StateConflict(
+                        "job result was replaced with different content"
+                    )
+                return json.loads(existing["result_json"])
+
+            self._reap_expired(connection, now)
+            lease = self._owned_lease(
+                connection,
+                result["lease_id"],
+                runner_id=result["runner_id"],
+                generation=generation,
+            )
+            for field in ("attempt_id", "job_id"):
+                if result[field] != lease[field]:
+                    raise StateConflict(f"result {field} does not match its lease")
+            job = connection.execute(
+                """
+                SELECT repository FROM jobs
+                WHERE attempt_id = ? AND job_id = ?
+                """,
+                (lease["attempt_id"], lease["job_id"]),
+            ).fetchone()
+            if job is None or result["repository"] != job["repository"]:
+                raise StateConflict("result repository does not match its job")
+            if _parse_timestamp(result["started_at"], "started_at") < _parse_timestamp(
+                lease["acquired_at"], "acquired_at"
+            ):
+                raise StateConflict("result started before its lease")
+            if _parse_timestamp(
+                result["finished_at"], "finished_at"
+            ) > _parse_timestamp(now, "now"):
+                raise StateConflict("result finished in the future")
+
+            connection.execute(
+                "INSERT INTO results VALUES (?, ?, ?, ?, ?)",
+                (
+                    result["attempt_id"],
+                    result["job_id"],
+                    canonical_json(result).decode(),
+                    result["result_digest"],
+                    now,
+                ),
+            )
+            job_state = _job_state_for_outcome(result["outcome"])
+            connection.execute(
+                """
+                UPDATE jobs SET state = ?, updated_at = ?
+                WHERE attempt_id = ? AND job_id = ?
+                """,
+                (job_state, now, result["attempt_id"], result["job_id"]),
+            )
+            connection.execute(
+                """
+                UPDATE leases
+                SET released_at = ?, release_reason = 'completed'
+                WHERE lease_id = ?
+                """,
+                (now, result["lease_id"]),
+            )
+        return result
+
+    def reap_expired(self, *, now: str) -> int:
+        _parse_timestamp(now, "now")
+        with self._transaction() as connection:
+            return self._reap_expired(connection, now)
+
+    def list_leases(self) -> list[dict[str, Any]]:
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT * FROM leases ORDER BY acquired_at, lease_id"
+            ).fetchall()
+        return [self._lease_record(row) for row in rows]
+
+    def get_result(self, attempt_id: str, job_id: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT result_json FROM results
+                WHERE attempt_id = ? AND job_id = ?
+                """,
+                (attempt_id, job_id),
+            ).fetchone()
+        return json.loads(row["result_json"]) if row is not None else None
+
     @staticmethod
     def _job_record(row: sqlite3.Row) -> dict[str, Any]:
         record = dict(row)
         record["manifest"] = json.loads(record.pop("manifest_json"))
         return record
+
+    @staticmethod
+    def _lease_record(row: sqlite3.Row) -> dict[str, Any]:
+        return dict(row)
+
+    @staticmethod
+    def _owned_lease(
+        connection: sqlite3.Connection,
+        lease_id: str,
+        *,
+        runner_id: str,
+        generation: str,
+    ) -> sqlite3.Row:
+        row = connection.execute(
+            "SELECT * FROM leases WHERE lease_id = ?", (lease_id,)
+        ).fetchone()
+        if row is None or row["released_at"] is not None:
+            raise StateConflict("active lease does not exist")
+        if row["runner_id"] != runner_id or row["generation"] != generation:
+            raise StateConflict("lease owner does not match")
+        return row
+
+    @staticmethod
+    def _release_lease(
+        connection: sqlite3.Connection,
+        lease: sqlite3.Row,
+        *,
+        reason: str,
+        now: str,
+    ) -> None:
+        connection.execute(
+            """
+            UPDATE leases SET released_at = ?, release_reason = ?
+            WHERE lease_id = ?
+            """,
+            (now, reason, lease["lease_id"]),
+        )
+        connection.execute(
+            """
+            UPDATE jobs SET state = 'queued', updated_at = ?
+            WHERE attempt_id = ? AND job_id = ? AND state = 'leased'
+            """,
+            (now, lease["attempt_id"], lease["job_id"]),
+        )
+
+    @classmethod
+    def _reap_expired(cls, connection: sqlite3.Connection, now: str) -> int:
+        rows = connection.execute(
+            """
+            SELECT * FROM leases
+            WHERE released_at IS NULL
+              AND julianday(expires_at) <= julianday(?)
+            """,
+            (now,),
+        ).fetchall()
+        for lease in rows:
+            cls._release_lease(connection, lease, reason="expired", now=now)
+        return len(rows)
 
     @staticmethod
     def _validate_manifest_identity(
@@ -409,7 +836,7 @@ def _commit(value: str, field: str) -> None:
 
 
 def _parse_timestamp(value: str, field: str) -> datetime:
-    if not isinstance(value, str) or not value.endswith("Z"):
+    if not isinstance(value, str) or TIMESTAMP_PATTERN.fullmatch(value) is None:
         raise StateError(f"{field} must be a UTC RFC3339 timestamp")
     try:
         parsed = datetime.fromisoformat(value.removesuffix("Z") + "+00:00")
@@ -422,3 +849,11 @@ def _parse_timestamp(value: str, field: str) -> datetime:
 
 def _attempt_record(row: sqlite3.Row) -> dict[str, Any]:
     return {key: row[key] for key in row.keys() if key != "request_json"}
+
+
+def _job_state_for_outcome(outcome: str) -> str:
+    if outcome == "cancelled":
+        return "cancelled"
+    if outcome in {"infrastructure_failure", "declined"}:
+        return "failed"
+    return "completed"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import re
 from collections.abc import Mapping
 from datetime import datetime
@@ -16,6 +17,7 @@ IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 LABEL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+TIMESTAMP_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z")
 
 
 class ContractError(ValueError):
@@ -25,13 +27,15 @@ class ContractError(ValueError):
 def canonical_json(value: Mapping[str, Any]) -> bytes:
     try:
         return json.dumps(
-            value,
+            _json_value(value),
             allow_nan=False,
             ensure_ascii=False,
             separators=(",", ":"),
             sort_keys=True,
         ).encode()
-    except (TypeError, ValueError) as error:
+    except ContractError:
+        raise
+    except (RecursionError, TypeError, ValueError) as error:
         raise ContractError("contract must contain canonical JSON values") from error
 
 
@@ -348,7 +352,7 @@ def _non_negative_integer(value: Mapping[str, Any], field: str) -> int:
 
 def _timestamp(value: Mapping[str, Any], field: str) -> datetime:
     item = value.get(field)
-    if not isinstance(item, str) or not item.endswith("Z"):
+    if not isinstance(item, str) or TIMESTAMP_PATTERN.fullmatch(item) is None:
         raise ContractError(f"{field} must be a UTC RFC3339 timestamp")
     try:
         parsed = datetime.fromisoformat(item.removesuffix("Z") + "+00:00")
@@ -357,3 +361,21 @@ def _timestamp(value: Mapping[str, Any], field: str) -> datetime:
     if parsed.utcoffset() is None or parsed.utcoffset().total_seconds() != 0:
         raise ContractError(f"{field} must be a UTC RFC3339 timestamp")
     return parsed
+
+
+def _json_value(value: Any, *, depth: int = 0) -> Any:
+    if depth > 64:
+        raise ContractError("contract JSON exceeds the nesting limit")
+    if value is None or isinstance(value, bool | int | str):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ContractError("contract JSON numbers must be finite")
+        return value
+    if isinstance(value, list):
+        return [_json_value(item, depth=depth + 1) for item in value]
+    if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise ContractError("contract JSON object keys must be strings")
+        return {key: _json_value(item, depth=depth + 1) for key, item in value.items()}
+    raise ContractError("contract must contain canonical JSON values")

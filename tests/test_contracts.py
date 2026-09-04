@@ -112,6 +112,28 @@ class ContractTests(unittest.TestCase):
             canonical_digest({"b": 2, "a": 1}),
         )
 
+    def test_contract_json_rejects_non_string_keys(self):
+        job = self.job()
+        job["payload"] = {1: "not-json"}
+
+        with self.assertRaisesRegex(ContractError, "keys must be strings"):
+            seal_manifest(job)
+
+    def test_timestamp_requires_full_rfc3339_time(self):
+        request = {
+            "schema_version": 1,
+            "kind": "run_request",
+            "request_id": "request:1",
+            "repository": "Marvis-Labs/mlx-vlm",
+            "pull_request": 7,
+            "comment_id": 99,
+            "requester": "maintainer",
+            "requested_at": "2026-09-04Z",
+        }
+
+        with self.assertRaisesRegex(ContractError, "RFC3339"):
+            validate_request(request)
+
     @staticmethod
     def job():
         return {
