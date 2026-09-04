@@ -58,7 +58,7 @@ class RepositoryPlanTests(unittest.TestCase):
         manifest = self.manifest()
         self.write("models-family.json", manifest)
         control = self.control(manifest)
-        control["repository"] = "Marvis-Labs/other-models"
+        control["repository"] = "Example/project-two"
 
         with self.assertRaisesRegex(ContractError, "repository does not match"):
             prepare_repository_plan(control, jobs=self.jobs)
@@ -79,7 +79,7 @@ class RepositoryPlanTests(unittest.TestCase):
         return {
             "schema_version": 1,
             "attempt_id": "attempt:1",
-            "repository": "Marvis-Labs/example-models",
+            "repository": "Example/project-one",
             "base_sha": "a" * 40,
             "head_sha": "b" * 40,
             "contract_sha": "c" * 40,
@@ -97,7 +97,7 @@ class RepositoryPlanTests(unittest.TestCase):
     def manifest():
         value = {
             "id": "models:family",
-            "repository": "Marvis-Labs/example-models",
+            "repository": "Example/project-one",
             "base_sha": "a" * 40,
             "head_sha": "b" * 40,
             "contract_sha": "c" * 40,

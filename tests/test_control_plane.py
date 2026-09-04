@@ -19,8 +19,8 @@ class ControlPlaneTests(unittest.TestCase):
     def test_submission_queues_opaque_repository_work(self):
         plan = self.plan(
             jobs=[
-                self.runner_manifest("job:first", operation="vision_generate"),
-                self.runner_manifest("job:second", operation="image_embedding"),
+                self.runner_manifest("job:first", operation="operation_one"),
+                self.runner_manifest("job:second", operation="operation_two"),
             ]
         )
 
@@ -33,7 +33,7 @@ class ControlPlaneTests(unittest.TestCase):
         manifests = [job["manifest"] for job in self.store.list_jobs()]
         self.assertEqual(
             manifests[0]["payload"]["runner_manifest"]["operation"],
-            "vision_generate",
+            "operation_one",
         )
 
     def test_delivery_replay_is_idempotent(self):

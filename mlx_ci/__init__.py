@@ -21,16 +21,33 @@ from mlx_ci.control_plane import (
     SubmissionDisposition,
     SubmissionReceipt,
 )
+from mlx_ci.github_ingress import (
+    AuthorizedRun,
+    GitHubIngress,
+    GitHubIngressError,
+    IngressDecision,
+    IngressOutcome,
+    RepositoryRegistration,
+)
 from mlx_ci.scheduler import Assignment, QueueDiagnostic, QueueReason, Scheduler
 from mlx_ci.store import StateConflict, StateError, StateStore
 
 __all__ = [
+    "Assignment",
+    "AuthorizedRun",
     "ContractError",
     "ControlPlane",
+    "GitHubIngress",
+    "GitHubIngressError",
+    "IngressDecision",
+    "IngressOutcome",
     "QueueDiagnostic",
     "QueueReason",
-    "Assignment",
+    "RepositoryRegistration",
     "Scheduler",
+    "StateConflict",
+    "StateError",
+    "StateStore",
     "SubmissionDisposition",
     "SubmissionReceipt",
     "canonical_digest",
@@ -48,7 +65,4 @@ __all__ = [
     "validate_runner_response",
     "validate_work_plan",
     "wrap_runner_manifest",
-    "StateConflict",
-    "StateError",
-    "StateStore",
 ]

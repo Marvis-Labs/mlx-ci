@@ -17,9 +17,7 @@ jobs:
     if: >
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request &&
-      github.event.comment.body == '/ci run' &&
-      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'),
-               github.event.comment.author_association)
+      github.event.comment.body == '/ci run'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -54,8 +52,13 @@ jobs:
           PR_NUMBER: ${{ github.event.issue.number }}
           REPOSITORY: ${{ github.repository }}
         run: |
-          gh api "repos/$REPOSITORY/pulls/$PR_NUMBER" \
-            --jq '"base=\(.base.sha)\nhead=\(.head.sha)\nhead_repository=\(.head.repo.full_name)"' >> "$GITHUB_OUTPUT"
+          snapshot="$RUNNER_TEMP/pull-request.json"
+          gh api "repos/$REPOSITORY/pulls/$PR_NUMBER" > "$snapshot"
+          [[ "$(jq -r .state "$snapshot")" == open ]]
+          [[ "$(jq -r .number "$snapshot")" == "$PR_NUMBER" ]]
+          [[ "$(jq -r .base.repo.full_name "$snapshot")" == "$REPOSITORY" ]]
+          jq -r '"base=\(.base.sha)\nhead=\(.head.sha)\nhead_repository=\(.head.repo.full_name)"' \
+            "$snapshot" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: orchestrator
@@ -177,7 +180,8 @@ jobs:
           /usr/local/libexec/marvis-ci/RUN_JOB.sh \
             "$GITHUB_WORKSPACE/dispatch/jobs/$JOB_FILE" \
             "$GITHUB_WORKSPACE/$JOB_FILE.result.json" \
-            -- /usr/bin/python3 -m ci.work_executor \
+            -- /usr/bin/env PYTHONPATH="$GITHUB_WORKSPACE/control" \
+            /usr/bin/python3 -m ci.work_executor \
             --job "$GITHUB_WORKSPACE/dispatch/jobs/$JOB_FILE" \
             --control "$GITHUB_WORKSPACE/control" \
             --base "$GITHUB_WORKSPACE/base" \
