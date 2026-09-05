@@ -100,7 +100,7 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          PYTHONPATH=control python -m ci.control \
+          PYTHONPATH=control python -m ci.repository_adapter prepare \
             --repository-path control \
             --base-checkout base \
             --head-checkout head \
@@ -180,8 +180,7 @@ jobs:
           /usr/local/libexec/marvis-ci/RUN_JOB.sh \
             "$GITHUB_WORKSPACE/dispatch/jobs/$JOB_FILE" \
             "$GITHUB_WORKSPACE/$JOB_FILE.result.json" \
-            -- /usr/bin/env PYTHONPATH="$GITHUB_WORKSPACE/control" \
-            /usr/bin/python3 -m ci.work_executor \
+            -- /usr/bin/python3 -m ci.work_executor \
             --job "$GITHUB_WORKSPACE/dispatch/jobs/$JOB_FILE" \
             --control "$GITHUB_WORKSPACE/control" \
             --base "$GITHUB_WORKSPACE/base" \
@@ -231,7 +230,7 @@ jobs:
           HEAD_SHA: ${{ needs.prepare.outputs.head }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          python -m ci.report \
+          python -m ci.repository_adapter report \
             --control artifacts/control.json \
             --results artifacts \
             --run-url "$RUN_URL" \

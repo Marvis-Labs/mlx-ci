@@ -33,13 +33,17 @@ modalities, or repository-specific work types. Keep the boundaries below strict.
 
 ## Repository interface
 
-Participating repositories expose three trusted modules under `ci/`:
-`ci.control` creates sealed flat runner manifests, `ci.work_executor` runs the
-registered phases, and `ci.report` renders validated results. They also provide
-`ci/hosted-requirements.txt` with hash-pinned dependencies for planning and
-reporting. The reusable workflow in this repository owns authorization,
-immutable checkouts, generic queue preparation, runner dispatch, artifacts, and
-comment delivery.
+Participating repositories expose one trusted `ci.repository_adapter` command
+with `plan`, `hosted-checks`, `prepare`, and `report` subcommands. The adapter
+owns repository semantics and delegates execution to `ci.work_executor`.
+Repositories also provide `ci/hosted-requirements.txt` with hash-pinned hosted
+dependencies. The reusable workflows own authorization, immutable checkouts,
+generic queue preparation, runner dispatch, artifacts, and comment delivery.
+
+The control plane passes only repository-neutral arguments to the adapter. It
+does not import model, fixture, policy, configuration, executor, validator, or
+bot modules directly. This keeps audio and vision-language repositories on the
+same lifecycle without moving their semantic policy into `mlx-ci`.
 
 The control plane wraps each repository manifest without interpreting its
 payload. Before dispatch it verifies that work identity, repository, revisions,

@@ -28,27 +28,18 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: head
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
-      - name: Fetch immutable pull request head
-        env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          git -C control fetch --no-tags origin "pull/$PR_NUMBER/head"
-          [[ "$(git -C control rev-parse FETCH_HEAD)" == "$HEAD_SHA" ]]
       - name: Install repository-owned hosted dependencies
         run: python -m pip install --quiet --require-hashes -r control/ci/hosted-requirements.txt
-      - name: Materialize contributor configuration
-        env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/repository-ci"
-          PYTHONPATH=control python -m ci.component_config \
-            --repository control \
-            --revision "$HEAD_SHA" \
-            --output "$RUNNER_TEMP/repository-ci"
       - name: Build trusted repository plan
         id: control
         env:
@@ -58,19 +49,18 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          PYTHONPATH=control python -m ci.control plan \
+          PYTHONPATH=control python -m ci.repository_adapter plan \
             --repository-path control \
-            --base "$BASE_SHA" \
-            --head "$HEAD_SHA" \
+            --base-checkout control \
+            --head-checkout head \
+            --base-sha "$BASE_SHA" \
+            --head-sha "$HEAD_SHA" \
             --repository "$REPOSITORY" \
             --contract-sha "$BASE_SHA" \
-            --pr "$PR_NUMBER" \
-            --rules-config control/ci/change-rules.yaml \
-            --component-config-directory "$RUNNER_TEMP/repository-ci" \
-            --protected-config control/ci/protected_paths.yaml \
+            --pr-number "$PR_NUMBER" \
             --run-url "$RUN_URL" \
             --output control.json \
-            --markdown summary.md \
+            --summary summary.md \
             --github-output "$GITHUB_OUTPUT"
       - name: Publish planning summary
         run: cat summary.md >> "$GITHUB_STEP_SUMMARY"
@@ -97,19 +87,19 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: head
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: repository-plan-${{ github.run_id }}
-      - name: Fetch immutable pull request head
-        env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          git -C control fetch --no-tags origin "pull/$PR_NUMBER/head"
-          [[ "$(git -C control rev-parse FETCH_HEAD)" == "$HEAD_SHA" ]]
       - name: Install repository-owned hosted dependencies
         run: python -m pip install --quiet --require-hashes -r control/ci/hosted-requirements.txt
       - name: Run trusted hosted checks
@@ -118,13 +108,15 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          PYTHONPATH=control python -m ci.hosted_checks \
+          PYTHONPATH=control python -m ci.repository_adapter hosted-checks \
             --control control.json \
             --repository-path control \
-            --base "$BASE_SHA" \
-            --head "$HEAD_SHA" \
+            --base-checkout control \
+            --head-checkout head \
+            --base-sha "$BASE_SHA" \
+            --head-sha "$HEAD_SHA" \
             --output resolved-control.json \
-            --markdown hosted-summary.md \
+            --summary hosted-summary.md \
             --github-output "$GITHUB_OUTPUT"
           cat hosted-summary.md >> "$GITHUB_STEP_SUMMARY"
       - name: Enforce hosted-check result
