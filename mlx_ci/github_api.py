@@ -19,7 +19,7 @@ class GitHubAPI:
 
     def collaborator_permission(self, repository: str, username: str) -> str:
         value = self._get(
-            f"repos/{_path(repository)}/collaborators/{_path(username)}/permission"
+            f"repos/{_repository(repository)}/collaborators/{_segment(username)}/permission"
         )
         permission = value.get("permission")
         if not isinstance(permission, str):
@@ -27,10 +27,12 @@ class GitHubAPI:
         return permission
 
     def pull_request(self, repository: str, number: int) -> Mapping[str, Any]:
-        return self._get(f"repos/{_path(repository)}/pulls/{number}")
+        return self._get(f"repos/{_repository(repository)}/pulls/{number}")
 
     def issue_comment(self, repository: str, comment_id: int) -> Mapping[str, Any]:
-        return self._get(f"repos/{_path(repository)}/issues/comments/{comment_id}")
+        return self._get(
+            f"repos/{_repository(repository)}/issues/comments/{comment_id}"
+        )
 
     def _get(self, path: str) -> Mapping[str, Any]:
         request = urllib.request.Request(
@@ -60,5 +62,9 @@ class GitHubAPI:
         return value
 
 
-def _path(value: str) -> str:
+def _repository(value: str) -> str:
     return urllib.parse.quote(value, safe="/")
+
+
+def _segment(value: str) -> str:
+    return urllib.parse.quote(value, safe="")
