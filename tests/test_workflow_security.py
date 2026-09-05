@@ -19,6 +19,8 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn("--repository-path control", source)
         self.assertIn('--pr-number "$PR_NUMBER"', source)
         self.assertIn('--run-url "$RUN_URL"', source)
+        self.assertIn("Render infrastructure fallback", source)
+        self.assertIn("steps.renderer.outcome != 'success'", source)
         self.assertIn("permissions: {}", source)
         self.assertNotIn("author_association", source)
         self.assertNotIn("pull_request_target", source)
@@ -44,9 +46,7 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertNotIn("pull_request_target", source)
         self.assertNotIn("secrets: inherit", source)
         self.assertNotRegex(source, r"uses:\s+[^\s@]+@(main|master|v\d+)(?:\s|$)")
-        self.assertEqual(
-            len(re.findall(r"uses:\s+[^\s@]+@[0-9a-f]{40}", source)), 6
-        )
+        self.assertEqual(len(re.findall(r"uses:\s+[^\s@]+@[0-9a-f]{40}", source)), 6)
         self.assertEqual(source.count("persist-credentials: false"), 2)
 
 

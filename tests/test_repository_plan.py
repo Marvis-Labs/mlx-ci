@@ -71,6 +71,15 @@ class RepositoryPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractError, "file is invalid"):
             prepare_repository_plan(control, jobs=self.jobs)
 
+    def test_rejects_device_work_from_blocked_repository_plan(self):
+        manifest = self.manifest()
+        self.write("models-family.json", manifest)
+        control = self.control(manifest)
+        control["terminal_state"] = "blocked"
+
+        with self.assertRaisesRegex(ContractError, "blocked repository plan"):
+            prepare_repository_plan(control, jobs=self.jobs)
+
     def test_queue_rejects_duplicate_jobs(self):
         manifest = self.manifest()
         self.write("models-family.json", manifest)
@@ -87,6 +96,15 @@ class RepositoryPlanTests(unittest.TestCase):
         queue["head_sha"] = "d" * 40
 
         with self.assertRaisesRegex(ContractError, "head_sha does not match"):
+            validate_repository_queue(queue)
+
+    def test_queue_rejects_work_when_terminal_state_is_blocked(self):
+        manifest = self.manifest()
+        self.write("models-family.json", manifest)
+        queue, _ = prepare_repository_plan(self.control(manifest), jobs=self.jobs)
+        queue["terminal_state"] = "blocked"
+
+        with self.assertRaisesRegex(ContractError, "blocked repository queue"):
             validate_repository_queue(queue)
 
     def write(self, name, value):

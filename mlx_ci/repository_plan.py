@@ -26,6 +26,8 @@ def prepare_repository_plan(
     devices = record.get("device_jobs")
     if not isinstance(devices, list) or len(devices) > 512:
         raise ContractError("repository plan device_jobs must be a bounded list")
+    if record["terminal_state"] == "blocked" and devices:
+        raise ContractError("blocked repository plan cannot contain device jobs")
     wrapped = []
     matrix = []
     seen = set()
@@ -97,6 +99,8 @@ def validate_repository_queue(value: Mapping[str, Any]) -> dict[str, Any]:
         raise ContractError("repository queue jobs must be a bounded list")
     if len(canonical_json(value)) > 16_000_000:
         raise ContractError("repository queue exceeds the contract size limit")
+    if value["terminal_state"] == "blocked" and jobs:
+        raise ContractError("blocked repository queue cannot contain jobs")
     seen = set()
     for job in jobs:
         job = validate_job(job)
