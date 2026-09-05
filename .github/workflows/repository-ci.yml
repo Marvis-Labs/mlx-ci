@@ -96,16 +96,21 @@ jobs:
           BASE_SHA: ${{ steps.pr.outputs.base }}
           CONTRACT_SHA: ${{ github.workflow_sha }}
           HEAD_SHA: ${{ steps.pr.outputs.head }}
+          PR_NUMBER: ${{ github.event.issue.number }}
           REPOSITORY: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           PYTHONPATH=control python -m ci.control \
-            --base base \
-            --head head \
+            --repository-path control \
+            --base-checkout base \
+            --head-checkout head \
             --base-sha "$BASE_SHA" \
             --head-sha "$HEAD_SHA" \
             --contract-sha "$CONTRACT_SHA" \
             --attempt-id "$ATTEMPT_ID" \
             --repository "$REPOSITORY" \
+            --pr-number "$PR_NUMBER" \
+            --run-url "$RUN_URL" \
             --output control.json \
             --jobs jobs
       - name: Build generic queue
@@ -213,7 +218,18 @@ jobs:
       - name: Install repository-owned hosted dependencies
         run: python -m pip install --quiet --require-hashes -r ci/hosted-requirements.txt
       - name: Render trusted repository report
-        run: python -m ci.report --control artifacts/control.json --results artifacts --output report.md
+        env:
+          ATTEMPT_ID: ${{ github.run_id }}
+          HEAD_SHA: ${{ needs.prepare.outputs.head }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python -m ci.report \
+            --control artifacts/control.json \
+            --results artifacts \
+            --run-url "$RUN_URL" \
+            --attempt-id "$ATTEMPT_ID" \
+            --head-sha "$HEAD_SHA" \
+            --output report.md
       - name: Publish repository report
         env:
           GH_TOKEN: ${{ github.token }}
