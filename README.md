@@ -37,8 +37,9 @@ Participating repositories expose one trusted `ci.repository_adapter` command
 with `plan`, `hosted-checks`, `prepare`, and `report` subcommands. The adapter
 owns repository semantics and delegates execution to `ci.work_executor`.
 Repositories also provide `ci/hosted-requirements.txt` with hash-pinned hosted
-dependencies. The reusable workflows own authorization, immutable checkouts,
-generic queue preparation, runner dispatch, artifacts, and comment delivery.
+dependencies. The private dispatch workflow owns authorization, immutable
+checkouts, generic queue preparation, runner dispatch, artifacts, and comment
+delivery.
 
 The control plane passes only repository-neutral arguments to the adapter. It
 does not import model, fixture, policy, configuration, executor, validator, or
@@ -69,11 +70,12 @@ The application factory reads `MLX_CI_STATE_PATH`,
 `MLX_CI_SIGNING_KEY_ID`, and `MLX_CI_QUEUE_TOKEN_DIGEST`. It intentionally does
 not provide a cleartext development server.
 
-The reusable GitHub workflow remains a migration bridge until GitHub App
-ingress, result-triggered reporting, runner-side signature verification, and a
-durable service deployment are configured. It derives the central revision from
-the reusable workflow identity and the repository contract revision from the
-caller workflow identity; neither is a caller-provided input.
+The GitHub Actions dispatch path is a migration bridge until result-triggered
+reporting, runner-side signature polling, and a durable service deployment are
+configured. Participant repositories forward only repository, pull-request, and
+comment identifiers. The private workflow re-fetches and validates the comment,
+maintainer permission, and immutable revisions through the GitHub App before
+preparing work. App credentials never enter a self-hosted runner job.
 
 ## Security invariants
 

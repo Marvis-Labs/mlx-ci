@@ -22,16 +22,21 @@ class GitHubClient(Protocol):
 
     def pull_request(self, repository: str, number: int) -> Mapping[str, Any]: ...
 
+    def issue_comment(self, repository: str, comment_id: int) -> Mapping[str, Any]: ...
+
 
 @dataclass(frozen=True)
 class RepositoryRegistration:
     repository: str
-    contract_sha: str
+    contract_sha: str | None = None
 
     def __post_init__(self):
         if REPOSITORY_PATTERN.fullmatch(self.repository) is None:
             raise GitHubIngressError("registered repository is invalid")
-        if COMMIT_PATTERN.fullmatch(self.contract_sha) is None:
+        if (
+            self.contract_sha is not None
+            and COMMIT_PATTERN.fullmatch(self.contract_sha) is None
+        ):
             raise GitHubIngressError("registered contract_sha is invalid")
 
 
@@ -40,6 +45,7 @@ class AuthorizedRun:
     request: dict[str, Any]
     base_sha: str
     head_sha: str
+    head_repository: str
     contract_sha: str
 
 
@@ -117,6 +123,7 @@ class GitHubIngress:
 
         base_sha = _commit_path(pull_request, "base", "sha")
         head_sha = _commit_path(pull_request, "head", "sha")
+        head_repository = _repository_path(pull_request, "head", "repo", "full_name")
         request = {
             "schema_version": 1,
             "kind": "run_request",
@@ -141,8 +148,60 @@ class GitHubIngress:
                 request=request,
                 base_sha=base_sha,
                 head_sha=head_sha,
-                contract_sha=registration.contract_sha,
+                head_repository=head_repository,
+                contract_sha=registration.contract_sha or base_sha,
             ),
+        )
+
+    def repository_dispatch(self, event: Mapping[str, Any]) -> IngressDecision:
+        if event.get("action") != "ci-run-request":
+            return IngressDecision(IngressOutcome.IGNORED, "unsupported_action")
+        payload = _mapping(event.get("client_payload"), "client_payload")
+        if (
+            set(payload)
+            != {
+                "schema_version",
+                "repository",
+                "pull_request",
+                "comment_id",
+            }
+            or payload.get("schema_version") != 1
+        ):
+            raise GitHubIngressError("repository dispatch payload is invalid")
+        repository = _repository(payload.get("repository"), "repository")
+        if repository not in self.registrations:
+            return IngressDecision(IngressOutcome.IGNORED, "repository_not_registered")
+        pull_request = _positive_int(payload.get("pull_request"), "pull_request")
+        comment_id = _positive_int(payload.get("comment_id"), "comment_id")
+        comment = _mapping(
+            self.client.issue_comment(repository, comment_id), "issue_comment"
+        )
+        if _positive_int(comment.get("id"), "issue_comment.id") != comment_id:
+            raise GitHubIngressError("issue comment identity does not match request")
+        expected_issue_url = (
+            f"https://api.github.com/repos/{repository}/issues/{pull_request}"
+        )
+        if (
+            _string(comment.get("issue_url"), "issue_comment.issue_url")
+            != expected_issue_url
+        ):
+            raise GitHubIngressError(
+                "issue comment pull request does not match request"
+            )
+        sender = _string(_path(comment, "user", "login"), "issue_comment.user.login")
+        issue_comment_event = {
+            "action": "created",
+            "repository": {"full_name": repository},
+            "issue": {"number": pull_request, "pull_request": {}},
+            "comment": {
+                "id": comment_id,
+                "body": comment.get("body"),
+                "created_at": comment.get("created_at"),
+            },
+            "sender": {"login": sender},
+        }
+        return self.issue_comment(
+            issue_comment_event, delivery_id=f"comment:{comment_id}"
         )
 
 
@@ -167,6 +226,18 @@ def _commit_path(value: Mapping[str, Any], *parts: str) -> str:
     if COMMIT_PATTERN.fullmatch(commit) is None:
         raise GitHubIngressError(f"{field} must be an immutable commit SHA")
     return commit
+
+
+def _repository_path(value: Mapping[str, Any], *parts: str) -> str:
+    field = ".".join(parts)
+    return _repository(_path(value, *parts), field)
+
+
+def _repository(value: Any, field: str) -> str:
+    repository = _string(value, field)
+    if REPOSITORY_PATTERN.fullmatch(repository) is None:
+        raise GitHubIngressError(f"{field} must be a repository name")
+    return repository
 
 
 def _string(value: Any, field: str) -> str:

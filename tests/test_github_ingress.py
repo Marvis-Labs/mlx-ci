@@ -18,7 +18,17 @@ class FakeGitHub:
                 "sha": "a" * 40,
                 "repo": {"full_name": "Example/project-one"},
             },
-            "head": {"sha": "b" * 40},
+            "head": {
+                "sha": "b" * 40,
+                "repo": {"full_name": "Contributor/project-one"},
+            },
+        }
+        self.comment_value = {
+            "id": 42,
+            "body": "/ci run",
+            "created_at": "2026-09-04T12:00:00Z",
+            "issue_url": "https://api.github.com/repos/Example/project-one/issues/7",
+            "user": {"login": "maintainer"},
         }
         self.calls = []
 
@@ -29,6 +39,10 @@ class FakeGitHub:
     def pull_request(self, repository, number):
         self.calls.append(("pull_request", repository, number))
         return self.pull_request_value
+
+    def issue_comment(self, repository, comment_id):
+        self.calls.append(("comment", repository, comment_id))
+        return self.comment_value
 
 
 class GitHubIngressTests(unittest.TestCase):
@@ -45,6 +59,7 @@ class GitHubIngressTests(unittest.TestCase):
         self.assertEqual(decision.run.request["requester"], "maintainer")
         self.assertEqual(decision.run.base_sha, "a" * 40)
         self.assertEqual(decision.run.head_sha, "b" * 40)
+        self.assertEqual(decision.run.head_repository, "Contributor/project-one")
         self.assertEqual(decision.run.contract_sha, "c" * 40)
         self.assertEqual(
             client.calls,
@@ -149,6 +164,66 @@ class GitHubIngressTests(unittest.TestCase):
                 self.event(), delivery_id="invalid delivery"
             )
 
+    def test_dispatch_revalidates_comment_permission_and_pull_request(self):
+        client = FakeGitHub()
+
+        decision = GitHubIngress(
+            [RepositoryRegistration("Example/project-one")], client
+        ).repository_dispatch(self.dispatch_event())
+
+        self.assertEqual(decision.outcome, IngressOutcome.ACCEPTED)
+        self.assertEqual(decision.run.request["request_id"], "github:comment:42")
+        self.assertEqual(decision.run.contract_sha, "a" * 40)
+        self.assertEqual(
+            client.calls,
+            [
+                ("comment", "Example/project-one", 42),
+                ("permission", "Example/project-one", "maintainer"),
+                ("pull_request", "Example/project-one", 7),
+            ],
+        )
+
+    def test_dispatch_does_not_trust_forwarded_comment_identity(self):
+        event = self.dispatch_event()
+        event["client_payload"]["requester"] = "maintainer"
+
+        with self.assertRaisesRegex(GitHubIngressError, "payload is invalid"):
+            GitHubIngress(
+                [RepositoryRegistration("Example/project-one")], FakeGitHub()
+            ).repository_dispatch(event)
+
+    def test_dispatch_comment_must_belong_to_requested_pull_request(self):
+        client = FakeGitHub()
+        client.comment_value["issue_url"] = (
+            "https://api.github.com/repos/Example/project-one/issues/8"
+        )
+
+        with self.assertRaisesRegex(GitHubIngressError, "pull request does not match"):
+            GitHubIngress(
+                [RepositoryRegistration("Example/project-one")], client
+            ).repository_dispatch(self.dispatch_event())
+
+    def test_dispatch_rejects_non_exact_command_after_delivery(self):
+        client = FakeGitHub()
+        client.comment_value["body"] = "/ci run now"
+
+        decision = GitHubIngress(
+            [RepositoryRegistration("Example/project-one")], client
+        ).repository_dispatch(self.dispatch_event())
+
+        self.assertEqual(decision.outcome, IngressOutcome.IGNORED)
+        self.assertEqual(decision.reason, "unsupported_command")
+
+    def test_dispatch_rejects_unregistered_repository_before_api_calls(self):
+        client = FakeGitHub()
+
+        decision = GitHubIngress(
+            [RepositoryRegistration("Example/project-one")], client
+        ).repository_dispatch(self.dispatch_event(repository="Example/other"))
+
+        self.assertEqual(decision.outcome, IngressOutcome.IGNORED)
+        self.assertEqual(client.calls, [])
+
     @staticmethod
     def ingress(client):
         return GitHubIngress(
@@ -171,6 +246,18 @@ class GitHubIngressTests(unittest.TestCase):
                 "author_association": "NONE",
             },
             "sender": {"login": "maintainer"},
+        }
+
+    @staticmethod
+    def dispatch_event(repository="Example/project-one"):
+        return {
+            "action": "ci-run-request",
+            "client_payload": {
+                "schema_version": 1,
+                "repository": repository,
+                "pull_request": 7,
+                "comment_id": 42,
+            },
         }
 
 

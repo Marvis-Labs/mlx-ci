@@ -4,17 +4,20 @@ from pathlib import Path
 
 
 class WorkflowSecurityTests(unittest.TestCase):
-    def test_reusable_workflow_keeps_trust_boundaries_explicit(self):
+    def test_private_dispatch_workflow_keeps_trust_boundaries_explicit(self):
         source = (
             Path(__file__).resolve().parents[1]
             / ".github"
             / "workflows"
-            / "repository-ci.yml"
+            / "repository-dispatch.yml"
         ).read_text()
 
-        self.assertIn("workflow_call:", source)
-        self.assertIn("github.event.comment.body == '/ci run'", source)
-        self.assertIn("Verify maintainer permission", source)
+        self.assertIn("repository_dispatch:", source)
+        self.assertIn("types: [ci-run-request]", source)
+        self.assertIn("python -m mlx_ci.github_dispatch", source)
+        self.assertIn("cancel-in-progress: false", source)
+        self.assertIn("<!-- mlx-ci-request:$COMMENT_ID -->", source)
+        self.assertIn("already_reported", source)
         self.assertIn("-- /usr/bin/python3 -m ci.work_executor", source)
         self.assertIn("python -m ci.repository_adapter prepare", source)
         self.assertIn("python -m ci.repository_adapter report", source)
@@ -27,33 +30,21 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn("permissions: {}", source)
         self.assertNotIn("author_association", source)
         self.assertNotIn("pull_request_target", source)
+        self.assertNotIn("issue_comment", source)
         self.assertNotIn("secrets: inherit", source)
+        device = source.split("  device:", 1)[1].split("  report:", 1)[0]
+        self.assertNotIn("MLX_CI_APP_PRIVATE_KEY", device)
+        self.assertNotIn("create-github-app-token", device)
+        self.assertIn("shasum -a 256 -c sources.sha256", device)
         self.assertNotRegex(source, r"uses:\s+[^\s@]+@(main|master|v\d+)(?:\s|$)")
-        self.assertEqual(len(re.findall(r"uses:\s+[^\s@]+@[0-9a-f]{40}", source)), 14)
-        self.assertEqual(source.count("persist-credentials: false"), 8)
+        self.assertEqual(len(re.findall(r"uses:\s+[^\s@]+@[0-9a-f]{40}", source)), 13)
+        self.assertEqual(source.count("persist-credentials: false"), 5)
 
-    def test_pull_request_plan_uses_trusted_repository_code(self):
-        source = (
-            Path(__file__).resolve().parents[1]
-            / ".github"
-            / "workflows"
-            / "repository-plan.yml"
-        ).read_text()
+    def test_superseded_reusable_workflows_are_removed(self):
+        workflows = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 
-        self.assertIn("workflow_call:", source)
-        self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", source)
-        self.assertIn("python -m ci.repository_adapter plan", source)
-        self.assertIn("python -m ci.repository_adapter hosted-checks", source)
-        self.assertNotIn("ci.component_config", source)
-        self.assertNotIn("git -C control fetch", source)
-        self.assertIn("Detect trusted repository adapter", source)
-        self.assertIn("after its trusted adapter lands on the base branch", source)
-        self.assertIn("permissions: {}", source)
-        self.assertNotIn("pull_request_target", source)
-        self.assertNotIn("secrets: inherit", source)
-        self.assertNotRegex(source, r"uses:\s+[^\s@]+@(main|master|v\d+)(?:\s|$)")
-        self.assertEqual(len(re.findall(r"uses:\s+[^\s@]+@[0-9a-f]{40}", source)), 8)
-        self.assertEqual(source.count("persist-credentials: false"), 4)
+        self.assertFalse((workflows / "repository-ci.yml").exists())
+        self.assertFalse((workflows / "repository-plan.yml").exists())
 
 
 if __name__ == "__main__":
