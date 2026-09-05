@@ -46,6 +46,8 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn("python -m ci.repository_adapter hosted-checks", source)
         self.assertNotIn("ci.component_config", source)
         self.assertNotIn("git -C control fetch", source)
+        self.assertIn("Detect trusted repository adapter", source)
+        self.assertIn("after its trusted adapter lands on the base branch", source)
         self.assertIn("permissions: {}", source)
         self.assertNotIn("pull_request_target", source)
         self.assertNotIn("secrets: inherit", source)
