@@ -6,11 +6,9 @@ import pytest
 
 from mlx_ci.repository.control import (
     ControlError,
-    ExecutionOutcome,
     PlanningOutcome,
     configuration_digest,
     control_record,
-    execution_outcome,
     export_repository_plan,
     plan_repository,
     planning_outcome,
@@ -149,6 +147,7 @@ def test_control_record_preserves_hosted_checks():
         "work_type": "Docs",
         "component": "docs_change",
         "execution_target": "github_hosted",
+        "handler": "docs",
         "changed_paths": ["README.md"],
     }
 
@@ -163,6 +162,7 @@ def test_control_record_rejects_duplicate_hosted_check_ids():
         "work_type": "Docs",
         "component": "docs_change",
         "execution_target": "github_hosted",
+        "handler": "docs",
         "changed_paths": ["README.md"],
     }
 
@@ -254,27 +254,6 @@ def test_status_renderer_is_centralized_and_suppresses_mentions():
     assert "Awaiting maintainer approval" in rendered
     assert "@\u200breviewer\\|model" in rendered
     assert "No Apple Silicon job starts" in rendered
-
-
-@pytest.mark.parametrize(
-    ("exit_code", "cancelled", "infrastructure_failure", "expected"),
-    [
-        (0, False, False, ExecutionOutcome.PASSED),
-        (1, False, False, ExecutionOutcome.TEST_FAILURE),
-        (None, False, False, ExecutionOutcome.INFRASTRUCTURE_FAILURE),
-        (1, False, True, ExecutionOutcome.INFRASTRUCTURE_FAILURE),
-        (1, True, False, ExecutionOutcome.CANCELLED),
-    ],
-)
-def test_execution_outcomes(exit_code, cancelled, infrastructure_failure, expected):
-    assert (
-        execution_outcome(
-            exit_code,
-            cancelled=cancelled,
-            infrastructure_failure=infrastructure_failure,
-        )
-        is expected
-    )
 
 
 def test_plan_repository_uses_immutable_repository_head(tmp_path):

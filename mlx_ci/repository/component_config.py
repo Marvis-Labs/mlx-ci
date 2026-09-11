@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -40,17 +39,3 @@ def materialize(
         destination.write_bytes(result.stdout)
         written.append(destination)
     return tuple(written)
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--repository", type=Path, default=Path.cwd())
-    parser.add_argument("--revision", required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    args = parser.parse_args(argv)
-    materialize(args.repository, args.revision, args.output)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

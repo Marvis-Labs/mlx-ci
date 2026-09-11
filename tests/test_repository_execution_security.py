@@ -69,6 +69,53 @@ def test_job_rejects_unknown_fields_and_phases():
         )
 
 
+def test_job_rejects_boolean_resource_requirements():
+    value = job()
+    value["required_memory_gib"] = True
+
+    with pytest.raises(ExecutionSecurityError, match="required_memory_gib"):
+        seal_job(
+            value,
+            repository=REPOSITORY,
+            base_sha=SHA,
+            head_sha="b" * 40,
+            contract_sha=SHA,
+        )
+
+
+def test_participant_owns_its_work_vocabulary(monkeypatch):
+    value = {
+        "id": "stt:whisper",
+        "work_type": "STTPath",
+        "component": "stt",
+        "subject": "whisper",
+        "phases": ["synthetic", "hf_checkpoint"],
+        "required_memory_gib": 8,
+        "required_disk_gib": 4,
+        "hf_checkpoints": [{"role": "model", "repo": "org/model"}],
+        "fixture": "sample.flac",
+    }
+
+    def validate_audio(manifest):
+        if manifest.get("component") != "stt":
+            raise ValueError("unregistered audio work")
+        if set(manifest["phases"]) - {"synthetic", "hf_checkpoint"}:
+            raise ValueError("unregistered audio phase")
+
+    monkeypatch.setattr("ci.plugin.validate_job", validate_audio)
+
+    sealed = seal_job(
+        value,
+        repository=REPOSITORY,
+        base_sha=SHA,
+        head_sha="b" * 40,
+        contract_sha=SHA,
+    )
+
+    validate_job(sealed)
+    assert sealed["fixture"] == "sample.flac"
+
+
 def test_execution_rejects_wrong_sha(monkeypatch, tmp_path):
     control = tmp_path / "control"
     base = tmp_path / "base"

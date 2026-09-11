@@ -14,6 +14,7 @@ def control():
                 "work_type": "Docs",
                 "component": "docs_change",
                 "execution_target": "github_hosted",
+                "handler": "docs",
                 "changed_paths": ["README.md"],
             }
         ],

@@ -14,9 +14,15 @@ def test_runner_uses_prebuilt_trusted_python_without_uv_sync(monkeypatch, tmp_pa
     monkeypatch.setattr("mlx_ci.repository.probe_process.subprocess.run", invoke)
     monkeypatch.setenv("CI_JOB_PYTHON", "/trusted/venv/bin/python")
     project = tmp_path / "head"
-    probe = tmp_path / "control" / "ci" / "probe.py"
+    control = tmp_path / "control"
+    probe = control / "ci" / "probe.py"
 
-    run_project_probe(project, probe, ["--output", "result.json"])
+    run_project_probe(
+        project,
+        probe,
+        ["--output", "result.json"],
+        control=control,
+    )
 
     assert observed["command"] == [
         "/trusted/venv/bin/python",
@@ -26,7 +32,7 @@ def test_runner_uses_prebuilt_trusted_python_without_uv_sync(monkeypatch, tmp_pa
     ]
     paths = observed["environment"]["PYTHONPATH"].split(":")
     assert paths[-1] == str(project)
-    assert str(probe.parents[2]) in paths
+    assert str(control) in paths
 
 
 def test_local_fallback_is_frozen_and_offline(monkeypatch, tmp_path):
@@ -39,6 +45,11 @@ def test_local_fallback_is_frozen_and_offline(monkeypatch, tmp_path):
     monkeypatch.setattr("mlx_ci.repository.probe_process.subprocess.run", invoke)
     monkeypatch.delenv("CI_JOB_PYTHON", raising=False)
 
-    run_project_probe(tmp_path / "head", tmp_path / "probe.py", [])
+    run_project_probe(
+        tmp_path / "head",
+        tmp_path / "probe.py",
+        [],
+        control=tmp_path / "control",
+    )
 
     assert observed["command"][:4] == ["uv", "run", "--frozen", "--offline"]

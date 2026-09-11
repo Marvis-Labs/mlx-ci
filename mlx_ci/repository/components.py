@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +11,6 @@ class ComponentContext:
     config_directory: Path
     repository: Path
     contributor_config_directory: Path | None = None
-    services: dict[str, Any] = field(default_factory=dict)
 
     def config(self, relative_path: str, *, contributor: bool = False) -> Path:
         if contributor and self.contributor_config_directory is not None:
@@ -20,20 +19,12 @@ class ComponentContext:
                 return candidate
         return self.config_directory / relative_path
 
-    def service(self, name: str, factory: Callable[[], Any]) -> Any:
-        if name not in self.services:
-            self.services[name] = factory()
-        return self.services[name]
-
-
 @dataclass(frozen=True)
 class ExecutionContext:
     job_path: Path
     control: Path
     base: Path
     head: Path
-    image: Path
-    max_tokens: int
 
     @property
     def config_directory(self) -> Path:

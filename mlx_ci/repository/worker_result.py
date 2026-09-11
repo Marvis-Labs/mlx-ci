@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import argparse
-import json
 import math
 from collections.abc import Mapping, Sequence
-from pathlib import Path
 from typing import Any
 
 RESULT_FIELDS = frozenset(
@@ -203,27 +200,3 @@ def _infrastructure_failure(job: Mapping[str, Any], message: str) -> dict[str, A
         "outcome": "infrastructure_failure",
         "findings": {"error": message},
     }
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--job", type=Path, required=True)
-    parser.add_argument("--result", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--infrastructure-error", type=Path)
-    args = parser.parse_args(argv)
-
-    job = json.loads(args.job.read_text())
-    raw_result = json.loads(args.result.read_text()) if args.result.is_file() else None
-    infrastructure_error = None
-    if args.infrastructure_error and args.infrastructure_error.is_file():
-        error_lines = args.infrastructure_error.read_text().strip().splitlines()
-        if error_lines:
-            infrastructure_error = f"lease heartbeat failed: {error_lines[-1][:500]}"
-    result = finalize(job, raw_result, infrastructure_error)
-    args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

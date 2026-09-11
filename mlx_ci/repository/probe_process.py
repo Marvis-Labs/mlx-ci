@@ -11,6 +11,7 @@ def run_project_probe(
     probe: Path,
     arguments: Sequence[str],
     *,
+    control: Path,
     python_path: Sequence[Path] = (),
     environment: Mapping[str, str] | None = None,
     allowed_returncodes: frozenset[int] = frozenset({0}),
@@ -37,7 +38,7 @@ def run_project_probe(
         (
             *(str(path) for path in python_path),
             str(Path(__file__).resolve().parents[2]),
-            str(probe.parents[2]),
+            str(control),
             str(project),
         )
     )

@@ -16,8 +16,6 @@ def work_args(tmp_path, phases):
         base=tmp_path / "base",
         head=tmp_path / "head",
         control=tmp_path / "control",
-        image=None,
-        max_tokens=16,
     )
 
 

@@ -88,8 +88,6 @@ def run(
         control=args.control,
         base=args.base,
         head=args.head,
-        image=args.image or args.control / "ci" / "assets" / "cat.jpg",
-        max_tokens=args.max_tokens,
     )
     commands = phase_commands(context)
     if validate_execution:
@@ -150,8 +148,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--control", type=Path, default=directory.parent)
     parser.add_argument("--base", type=Path, required=True)
     parser.add_argument("--head", type=Path, required=True)
-    parser.add_argument("--image", type=Path)
-    parser.add_argument("--max-tokens", type=int, default=16)
     args = parser.parse_args(argv)
     return run(args)[0]
 

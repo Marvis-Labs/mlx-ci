@@ -6,22 +6,40 @@ def contributor_config_paths():
     return ("config/models.yaml", "config/scenarios.yaml")
 
 
-def supported_components():
-    return frozenset({"audio_path", "docs_change", "model_path", "new_model_path"})
-
-
-def supported_work():
-    return frozenset({("ModelPath", "model_path")})
-
-
-def supported_phases():
-    return frozenset({"synthetic", "hf_checkpoint"})
-
-
-def supported_job_fields():
-    return frozenset(
-        {"synthetic", "hf_checkpoint", "scenarios", "unavailable_phases"}
-    )
+def validate_job(job):
+    allowed = {
+        "id",
+        "work_type",
+        "component",
+        "subject",
+        "model",
+        "profile",
+        "changed_paths",
+        "origins",
+        "phases",
+        "required_memory_gib",
+        "required_disk_gib",
+        "repository",
+        "base_sha",
+        "head_sha",
+        "contract_sha",
+        "manifest_digest",
+        "synthetic",
+        "hf_checkpoint",
+        "scenarios",
+        "unavailable_phases",
+    }
+    if unexpected := sorted(set(job) - allowed):
+        raise ValueError(
+            "work manifest contains unregistered fields: " + ", ".join(unexpected)
+        )
+    if (job.get("work_type"), job.get("component")) != (
+        "ModelPath",
+        "model_path",
+    ):
+        raise ValueError("unregistered work item")
+    if any(phase not in {"synthetic", "hf_checkpoint"} for phase in job["phases"]):
+        raise ValueError("work manifest contains unregistered phases")
 
 
 def phase_commands(context):

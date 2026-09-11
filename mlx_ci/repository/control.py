@@ -29,13 +29,6 @@ class PlanningOutcome(str, Enum):
     READY = "ready"
 
 
-class ExecutionOutcome(str, Enum):
-    PASSED = "passed"
-    TEST_FAILURE = "test_failure"
-    INFRASTRUCTURE_FAILURE = "infrastructure_failure"
-    CANCELLED = "cancelled"
-
-
 class ControlError(ValueError):
     pass
 
@@ -54,21 +47,6 @@ def planning_outcome(plan: Mapping[str, Any]) -> PlanningOutcome:
     if plan.get("gates"):
         return PlanningOutcome.AWAITING_APPROVAL
     return PlanningOutcome.READY
-
-
-def execution_outcome(
-    exit_code: int | None,
-    *,
-    cancelled: bool = False,
-    infrastructure_failure: bool = False,
-) -> ExecutionOutcome:
-    if cancelled:
-        return ExecutionOutcome.CANCELLED
-    if infrastructure_failure or exit_code is None:
-        return ExecutionOutcome.INFRASTRUCTURE_FAILURE
-    if exit_code == 0:
-        return ExecutionOutcome.PASSED
-    return ExecutionOutcome.TEST_FAILURE
 
 
 def control_record(

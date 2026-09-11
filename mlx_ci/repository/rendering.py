@@ -5,10 +5,6 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 
-class BotOutputError(ValueError):
-    pass
-
-
 class ComponentOutput(Protocol):
     component_names: frozenset[str]
 
@@ -373,9 +369,7 @@ class BotOutput:
     ):
         self.record = record
         if components is None:
-            from ci.plugin import supported_components
-
-            names = supported_components()
+            names = _component_names(record)
             components = (
                 DocsChangeOutput(),
                 WorkOutput(names - DocsChangeOutput.component_names),
@@ -388,7 +382,6 @@ class BotOutput:
             for component in self.components
             for section in component.sections(self.record)
         )
-        self._reject_unknown_components()
         status = self._status(sections)
         summary = (
             f"{_icon(status)} **{_cell(status)}** · "
@@ -449,40 +442,24 @@ class BotOutput:
         )
         return lines
 
-    def _reject_unknown_components(self) -> None:
-        from ci.plugin import supported_components
-
-        supported = set().union(
-            *(component.component_names for component in self.components)
-        )
-        supported.update(supported_components())
-        encountered = {
-            str(item["component"])
-            for key in ("jobs", "gates", "checks", "results")
-            for item in _items(self.record, key)
-            if item.get("component")
-        }
-        encountered.update(
-            str(error["component"])
-            for error in _items(self.record, "errors")
-            if error.get("component") not in {None, "planner"}
-        )
-        components = self.record.get("components")
-        if isinstance(components, Sequence) and not isinstance(
-            components, str | bytes
-        ):
-            encountered.update(str(value) for value in components if value)
-        if unknown := sorted(encountered - supported):
-            raise BotOutputError(
-                "no bot output renderer for components: " + ", ".join(unknown)
-            )
-
-
 def _items(record: Mapping[str, Any], key: str) -> list[Mapping[str, Any]]:
     value = record.get(key)
     if not isinstance(value, Sequence) or isinstance(value, str | bytes):
         return []
     return [item for item in value if isinstance(item, Mapping)]
+
+
+def _component_names(record: Mapping[str, Any]) -> frozenset[str]:
+    names = {
+        str(item["component"])
+        for key in ("jobs", "gates", "checks", "results", "errors")
+        for item in _items(record, key)
+        if item.get("component") not in {None, "planner"}
+    }
+    components = record.get("components")
+    if isinstance(components, Sequence) and not isinstance(components, str | bytes):
+        names.update(str(value) for value in components if value)
+    return frozenset(names)
 
 
 def _subject(item: Mapping[str, Any]) -> str:

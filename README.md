@@ -43,6 +43,9 @@ delivery.
 The control plane imports only the participant's narrow plugin contract. Model
 knowledge and inference stay in the model repository; lifecycle and safety
 machinery stay shared so audio and vision-language CI do not fork it.
+The plugin supplies planners, contributor configuration paths, job and gate
+validation, and phase commands; labels and contributor-facing failure messages
+are optional. The participant owns its work types, phases, and payload fields.
 
 The control plane wraps each repository manifest without interpreting its
 payload. Before dispatch it verifies that work identity, repository, revisions,

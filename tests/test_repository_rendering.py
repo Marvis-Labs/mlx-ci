@@ -1,6 +1,6 @@
 import pytest
 
-from mlx_ci.repository.rendering import BotOutput, BotOutputError
+from mlx_ci.repository.rendering import BotOutput
 
 
 def job(model):
@@ -258,8 +258,19 @@ def test_registered_work_type_uses_the_shared_renderer():
     assert "<strong>kokoro</strong> · TTSPath · Awaiting /ci run" in rendered
 
 
-def test_unknown_component_is_rejected():
-    with pytest.raises(BotOutputError, match="component_path"):
-        BotOutput(
-            record(jobs=[{"component": "component_path", "id": "unknown"}])
-        ).render()
+def test_new_component_uses_the_shared_renderer_without_registration():
+    rendered = BotOutput(
+        record(
+            jobs=[
+                {
+                    "component": "component_path",
+                    "work_type": "ComponentPath",
+                    "subject": "shared",
+                    "id": "component:shared",
+                    "phases": ["correctness"],
+                }
+            ]
+        )
+    ).render()
+
+    assert "<strong>shared</strong> · ComponentPath · Awaiting /ci run" in rendered

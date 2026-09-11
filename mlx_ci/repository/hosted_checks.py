@@ -29,8 +29,8 @@ def run_hosted_checks(
             raise HostedCheckError("hosted check must be an object")
         if check.get("execution_target") != "github_hosted":
             continue
-        if check.get("work_type") != "Docs":
-            results.append(_infrastructure_failure(check, "unsupported work type"))
+        if check.get("handler") != "docs":
+            results.append(_infrastructure_failure(check, "unsupported hosted handler"))
             continue
         try:
             results.append(

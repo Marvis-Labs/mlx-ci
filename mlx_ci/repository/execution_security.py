@@ -8,38 +8,10 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from ci.plugin import (
-    supported_job_fields,
-    supported_phases,
-    supported_work,
-)
-
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 REPOSITORY_PATTERN = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*"
 )
-COMMON_JOB_FIELDS = frozenset(
-    {
-        "id",
-        "work_type",
-        "component",
-        "subject",
-        "model",
-        "profile",
-        "changed_paths",
-        "origins",
-        "phases",
-        "required_memory_gib",
-        "required_disk_gib",
-        "repository",
-        "base_sha",
-        "head_sha",
-        "contract_sha",
-        "manifest_digest",
-    }
-)
-
-
 class ExecutionSecurityError(ValueError):
     pass
 
@@ -73,16 +45,7 @@ def seal_job(
 
 
 def validate_job(job: Mapping[str, Any], *, require_digest: bool = True) -> None:
-    allowed = COMMON_JOB_FIELDS | supported_job_fields()
-    unexpected = sorted(set(job) - allowed)
-    if unexpected:
-        raise ExecutionSecurityError(
-            "work manifest contains unregistered fields: " + ", ".join(unexpected)
-        )
-    work = (job.get("work_type"), job.get("component"))
-    if work not in supported_work():
-        raise ExecutionSecurityError(f"unregistered work item: {work!r}")
-    for field in ("id", "subject"):
+    for field in ("id", "work_type", "component", "subject"):
         if not isinstance(job.get(field), str) or not job[field]:
             raise ExecutionSecurityError(f"work manifest requires {field}")
     repository = job.get("repository")
@@ -95,29 +58,28 @@ def validate_job(job: Mapping[str, Any], *, require_digest: bool = True) -> None
     if not isinstance(phases, list) or not phases:
         raise ExecutionSecurityError("work manifest requires phases")
     if len(phases) != len(set(phases)) or any(
-        not isinstance(phase, str) or phase not in supported_phases()
-        for phase in phases
+        not isinstance(phase, str) or not 1 <= len(phase) <= 128 for phase in phases
     ):
-        raise ExecutionSecurityError("work manifest contains unregistered phases")
+        raise ExecutionSecurityError("work manifest contains invalid phases")
     for field in ("required_memory_gib", "required_disk_gib"):
-        if not isinstance(job.get(field), int) or job[field] <= 0:
+        if type(job.get(field)) is not int or job[field] <= 0:
             raise ExecutionSecurityError(f"work manifest requires positive {field}")
     for field in ("base_sha", "head_sha", "contract_sha"):
         value = job.get(field)
         if not isinstance(value, str) or COMMIT_PATTERN.fullmatch(value) is None:
             raise ExecutionSecurityError(f"work manifest requires immutable {field}")
-    repository = job.get("repository")
-    if (
-        not isinstance(repository, str)
-        or REPOSITORY_PATTERN.fullmatch(repository) is None
-    ):
-        raise ExecutionSecurityError("work manifest requires repository identity")
     if require_digest:
         supplied = job.get("manifest_digest")
         unsigned = dict(job)
         unsigned.pop("manifest_digest", None)
         if supplied != canonical_digest(unsigned):
             raise ExecutionSecurityError("work manifest digest does not match")
+    try:
+        from ci.plugin import validate_job as validate_participant_job
+
+        validate_participant_job(job)
+    except (ImportError, TypeError, ValueError) as error:
+        raise ExecutionSecurityError(str(error)) from error
 
 
 def verify_execution(
