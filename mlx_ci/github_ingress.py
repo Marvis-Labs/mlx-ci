@@ -100,30 +100,10 @@ class GitHubIngress:
             return IngressDecision(IngressOutcome.DENIED, "insufficient_permission")
 
         pull_request_number = _positive_int(issue.get("number"), "issue.number")
-        pull_request = _mapping(
-            self.client.pull_request(repository, pull_request_number), "pull_request"
-        )
-        if pull_request.get("state") != "open":
+        resolved = self._pull_request(repository, pull_request_number)
+        if resolved is None:
             return IngressDecision(IngressOutcome.IGNORED, "pull_request_not_open")
-        if (
-            _positive_int(pull_request.get("number"), "pull_request.number")
-            != pull_request_number
-        ):
-            raise GitHubIngressError("pull request number does not match request")
-        if (
-            _string(
-                _path(pull_request, "base", "repo", "full_name"),
-                "pull_request.base.repo.full_name",
-            )
-            != repository
-        ):
-            raise GitHubIngressError(
-                "pull request base repository does not match request"
-            )
-
-        base_sha = _commit_path(pull_request, "base", "sha")
-        head_sha = _commit_path(pull_request, "head", "sha")
-        head_repository = _repository_path(pull_request, "head", "repo", "full_name")
+        pull_request, base_sha, head_sha, head_repository = resolved
         request = {
             "schema_version": 1,
             "kind": "run_request",
@@ -154,7 +134,10 @@ class GitHubIngress:
         )
 
     def repository_dispatch(self, event: Mapping[str, Any]) -> IngressDecision:
-        if event.get("action") != "ci-run-request":
+        action = event.get("action")
+        if action == "ci-plan-request":
+            return self._repository_plan_dispatch(event)
+        if action != "ci-run-request":
             return IngressDecision(IngressOutcome.IGNORED, "unsupported_action")
         payload = _mapping(event.get("client_payload"), "client_payload")
         if (
@@ -202,6 +185,75 @@ class GitHubIngress:
         }
         return self.issue_comment(
             issue_comment_event, delivery_id=f"comment:{comment_id}"
+        )
+
+    def _repository_plan_dispatch(
+        self, event: Mapping[str, Any]
+    ) -> IngressDecision:
+        payload = _mapping(event.get("client_payload"), "client_payload")
+        if (
+            set(payload)
+            != {"schema_version", "repository", "pull_request", "delivery_id"}
+            or payload.get("schema_version") != 1
+        ):
+            raise GitHubIngressError("repository dispatch payload is invalid")
+        repository = _repository(payload.get("repository"), "repository")
+        registration = self.registrations.get(repository)
+        if registration is None:
+            return IngressDecision(IngressOutcome.IGNORED, "repository_not_registered")
+        pull_request_number = _positive_int(
+            payload.get("pull_request"), "pull_request"
+        )
+        delivery_id = _positive_int(payload.get("delivery_id"), "delivery_id")
+        resolved = self._pull_request(repository, pull_request_number)
+        if resolved is None:
+            return IngressDecision(IngressOutcome.IGNORED, "pull_request_not_open")
+        pull_request, base_sha, head_sha, head_repository = resolved
+        request = validate_request(
+            {
+                "schema_version": 1,
+                "kind": "run_request",
+                "request_id": f"github:plan:{delivery_id}",
+                "repository": repository,
+                "pull_request": pull_request_number,
+                "comment_id": delivery_id,
+                "requester": "github-actions",
+                "requested_at": _string(
+                    pull_request.get("updated_at"), "pull_request.updated_at"
+                ),
+            }
+        )
+        return IngressDecision(
+            IngressOutcome.ACCEPTED,
+            "authorized",
+            AuthorizedRun(
+                request=request,
+                base_sha=base_sha,
+                head_sha=head_sha,
+                head_repository=head_repository,
+                contract_sha=registration.contract_sha or base_sha,
+            ),
+        )
+
+    def _pull_request(
+        self, repository: str, number: int
+    ) -> tuple[Mapping[str, Any], str, str, str] | None:
+        pull_request = _mapping(
+            self.client.pull_request(repository, number), "pull_request"
+        )
+        if pull_request.get("state") != "open":
+            return None
+        if _positive_int(pull_request.get("number"), "pull_request.number") != number:
+            raise GitHubIngressError("pull request number does not match request")
+        if _repository_path(pull_request, "base", "repo", "full_name") != repository:
+            raise GitHubIngressError(
+                "pull request base repository does not match request"
+            )
+        return (
+            pull_request,
+            _commit_path(pull_request, "base", "sha"),
+            _commit_path(pull_request, "head", "sha"),
+            _repository_path(pull_request, "head", "repo", "full_name"),
         )
 
 

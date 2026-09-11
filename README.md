@@ -8,8 +8,8 @@ modalities, or repository-specific work types. Keep the boundaries below strict.
 
 | Repository | Owns |
 | --- | --- |
-| Participating repositories | Change rules, domain catalogs, fixtures, planners, probes, executors, correctness policy, resource estimates, result validation, and bot rendering |
-| `mlx-ci` | GitHub App authorization, trusted orchestration, global queueing, runner inventory, smallest-fit selection, cross-repository leases, immutable attempts, retry and escalation, manifest signing, result transport, and PR status delivery |
+| Participating repositories | Declarative change rules, domain catalogs, fixtures, model-specific planners and probes, resource estimates, and a small `ci.plugin` registration surface |
+| `mlx-ci` | Change detection, plan assembly, hosted checks, execution, result validation, bot rendering, GitHub App authorization, global queueing, runner inventory, smallest-fit selection, leases, immutable attempts, retry and escalation, signing, and delivery |
 | `ci-runner` | Machine setup, runner registration, capability and heartbeat reporting, local atomic leases, checkpoint caching, asset staging, sandboxing, cleanup, and execution of sealed work manifests |
 
 ## Control flow
@@ -19,7 +19,7 @@ modalities, or repository-specific work types. Keep the boundaries below strict.
 2. The control plane resolves immutable base, head, and trusted contract SHAs.
    Repository CI code always comes from the configured trusted CI ref, never
    from the pull-request head.
-3. The trusted repository planner emits independent work items with required
+3. The shared planner loads the repository plugin and emits independent work items with required
    memory, disk, phases, fixtures, and revision-pinned checkpoints.
 4. The global scheduler selects the smallest live runner that satisfies the
    work item, acquires a cross-repository lease, and escalates only when the
@@ -33,18 +33,16 @@ modalities, or repository-specific work types. Keep the boundaries below strict.
 
 ## Repository interface
 
-Participating repositories expose one trusted `ci.repository_adapter` command
-with `plan`, `hosted-checks`, `prepare`, and `report` subcommands. The adapter
-owns repository semantics and delegates execution to `ci.work_executor`.
-Repositories also provide `ci/hosted-requirements.txt` with hash-pinned hosted
-dependencies. The private dispatch workflow owns authorization, immutable
-checkouts, generic queue preparation, runner dispatch, artifacts, and comment
+Participating repositories expose `ci.plugin`, declarative configuration under
+`ci/config`, model-specific probes, assets, and hash-pinned `ci/requirements.txt`.
+The shared repository runtime provides planning, hosted checks, execution,
+validation, and reporting commands. The private workflows own authorization,
+immutable checkouts, queue preparation, runner dispatch, artifacts, and comment
 delivery.
 
-The control plane passes only repository-neutral arguments to the adapter. It
-does not import model, fixture, policy, configuration, executor, validator, or
-bot modules directly. This keeps audio and vision-language repositories on the
-same lifecycle without moving their semantic policy into `mlx-ci`.
+The control plane imports only the participant's narrow plugin contract. Model
+knowledge and inference stay in the model repository; lifecycle and safety
+machinery stay shared so audio and vision-language CI do not fork it.
 
 The control plane wraps each repository manifest without interpreting its
 payload. Before dispatch it verifies that work identity, repository, revisions,

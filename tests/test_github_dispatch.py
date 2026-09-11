@@ -24,6 +24,7 @@ class FakeGitHubAPI:
         return {
             "number": number,
             "state": "open",
+            "updated_at": "2026-09-05T12:00:00Z",
             "base": {"sha": "a" * 40, "repo": {"full_name": repository}},
             "head": {
                 "sha": "b" * 40,
@@ -56,6 +57,25 @@ class GitHubDispatchTests(unittest.TestCase):
         self.assertEqual(result["contract_sha"], "a" * 40)
         self.assertEqual(result["head_repository"], "Contributor/project")
         self.assertEqual(result["request"]["request_id"], "github:comment:71")
+
+    @patch("mlx_ci.github_dispatch.GitHubAPI", FakeGitHubAPI)
+    def test_authorizes_automatic_plan_dispatch(self):
+        result = authorize_dispatch(
+            {
+                "action": "ci-plan-request",
+                "client_payload": {
+                    "schema_version": 1,
+                    "repository": "Example/project",
+                    "pull_request": 9,
+                    "delivery_id": 81,
+                },
+            },
+            token="x" * 40,
+            repositories=["Example/project"],
+        )
+
+        self.assertEqual(result["comment_id"], 81)
+        self.assertEqual(result["request"]["request_id"], "github:plan:81")
 
 
 if __name__ == "__main__":

@@ -26,5 +26,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: |
+          python -m pip install --disable-pip-version-check -e '.[test]'
           python -m compileall -q mlx_ci tests
-          python -m unittest discover -s tests -v
+          python -m pytest -q
+          python -m ruff check mlx_ci tests

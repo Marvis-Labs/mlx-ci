@@ -7,7 +7,10 @@ name = "marvis-mlx-ci"
 version = "0.1.0"
 description = "Trusted control plane for Marvis-Labs Apple-silicon CI"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["PyYAML==6.0.3"]
+
+[project.optional-dependencies]
+test = ["pytest==8.4.1", "ruff==0.11.13"]
 
 [tool.setuptools.packages.find]
 include = ["mlx_ci*"]

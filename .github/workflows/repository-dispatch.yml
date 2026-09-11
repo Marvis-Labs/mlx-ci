@@ -126,7 +126,7 @@ jobs:
           shasum -a 256 control.tar base.tar head.tar > sources.sha256
       - name: Install repository-owned hosted dependencies
         if: steps.deduplication.outputs.already_reported != 'true'
-        run: python -m pip install --quiet --require-hashes -r control/ci/hosted-requirements.txt
+        run: python -m pip install --quiet --require-hashes -r control/ci/requirements.txt
       - name: Build repository work manifests
         if: steps.deduplication.outputs.already_reported != 'true'
         env:
@@ -138,7 +138,7 @@ jobs:
           REPOSITORY: ${{ steps.authorization.outputs.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          PYTHONPATH=control python -m ci.repository_adapter prepare \
+          PYTHONPATH=orchestrator:control python -m mlx_ci.repository.adapter prepare \
             --repository-path control \
             --base-checkout base \
             --head-checkout head \
@@ -193,6 +193,11 @@ jobs:
     permissions:
       contents: read
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: orchestrator
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: repository-ci-control-${{ github.run_id }}
@@ -208,11 +213,12 @@ jobs:
       - name: Execute sealed repository work
         env:
           JOB_FILE: ${{ matrix.file }}
+          PYTHONPATH: ${{ github.workspace }}/orchestrator:${{ runner.temp }}/control
         run: |
           /usr/local/libexec/marvis-ci/RUN_JOB.sh \
             "$GITHUB_WORKSPACE/dispatch/jobs/$JOB_FILE" \
             "$GITHUB_WORKSPACE/$JOB_FILE.result.json" \
-            -- /usr/bin/python3 -m ci.work_executor \
+            -- /usr/bin/python3 -m mlx_ci.repository.executor \
             --job "$GITHUB_WORKSPACE/dispatch/jobs/$JOB_FILE" \
             --control "$RUNNER_TEMP/control" \
             --base "$RUNNER_TEMP/base" \
@@ -248,6 +254,12 @@ jobs:
           permission-issues: write
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          path: orchestrator
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: control
           repository: ${{ needs.prepare.outputs.repository }}
           ref: ${{ needs.prepare.outputs.contract }}
           persist-credentials: false
@@ -266,7 +278,7 @@ jobs:
         id: dependencies
         if: steps.artifacts.outcome == 'success'
         continue-on-error: true
-        run: python -m pip install --quiet --require-hashes -r ci/hosted-requirements.txt
+        run: python -m pip install --quiet --require-hashes -r control/ci/requirements.txt
       - name: Render trusted repository report
         id: renderer
         if: steps.dependencies.outcome == 'success'
@@ -276,7 +288,7 @@ jobs:
           HEAD_SHA: ${{ needs.prepare.outputs.head }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          python -m ci.repository_adapter report \
+          PYTHONPATH=orchestrator:control python -m mlx_ci.repository.adapter report \
             --control artifacts/control.json \
             --results artifacts \
             --run-url "$RUN_URL" \

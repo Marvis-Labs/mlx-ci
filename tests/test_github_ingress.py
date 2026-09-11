@@ -14,6 +14,7 @@ class FakeGitHub:
         self.pull_request_value = pull_request or {
             "number": 7,
             "state": "open",
+            "updated_at": "2026-09-04T12:00:00Z",
             "base": {
                 "sha": "a" * 40,
                 "repo": {"full_name": "Example/project-one"},
@@ -182,6 +183,25 @@ class GitHubIngressTests(unittest.TestCase):
                 ("pull_request", "Example/project-one", 7),
             ],
         )
+
+    def test_plan_dispatch_resolves_pull_request_without_comment_authority(self):
+        client = FakeGitHub(permission="read")
+        event = {
+            "action": "ci-plan-request",
+            "client_payload": {
+                "schema_version": 1,
+                "repository": "Example/project-one",
+                "pull_request": 7,
+                "delivery_id": 91,
+            },
+        }
+
+        decision = self.ingress(client).repository_dispatch(event)
+
+        self.assertEqual(decision.outcome, IngressOutcome.ACCEPTED)
+        self.assertEqual(decision.run.request["request_id"], "github:plan:91")
+        self.assertEqual(decision.run.head_sha, "b" * 40)
+        self.assertEqual(client.calls, [("pull_request", "Example/project-one", 7)])
 
     def test_dispatch_does_not_trust_forwarded_comment_identity(self):
         event = self.dispatch_event()
