@@ -18,7 +18,10 @@ from mlx_ci.repository.execution_security import (
 
 FORWARDED_ENVIRONMENT = frozenset(
     {
+        "CI_ASSETS_MANIFEST",
+        "CI_ASSETS_ROOT",
         "CI_CHECKPOINT_PATH",
+        "CI_CHECKPOINTS_MANIFEST",
         "CI_REQUIRE_SANDBOX",
         "CI_JOB_PYTHON",
         "HF_ASSETS_CACHE",

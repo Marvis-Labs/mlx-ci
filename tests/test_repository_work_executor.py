@@ -79,6 +79,8 @@ def test_phase_environment_does_not_forward_runner_secrets(monkeypatch, tmp_path
     monkeypatch.setenv("RUNNER_TOKEN", "secret")
     monkeypatch.setenv("PYTHONPATH", "/tmp/untrusted-python-path")
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("CI_ASSETS_ROOT", "/trusted/assets")
+    monkeypatch.setenv("CI_CHECKPOINTS_MANIFEST", "/trusted/checkpoints.json")
 
     from mlx_ci.repository.executor import _run
 
@@ -86,6 +88,8 @@ def test_phase_environment_does_not_forward_runner_secrets(monkeypatch, tmp_path
 
     assert code == 0
     assert captured["HF_HUB_OFFLINE"] == "1"
+    assert captured["CI_ASSETS_ROOT"] == "/trusted/assets"
+    assert captured["CI_CHECKPOINTS_MANIFEST"] == "/trusted/checkpoints.json"
     assert captured["PYTHONPATH"] == str(Path(__file__).resolve().parents[1])
     assert "HF_TOKEN" not in captured
     assert "GH_TOKEN" not in captured
