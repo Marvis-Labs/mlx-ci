@@ -101,6 +101,15 @@ preparing work. App credentials never enter a self-hosted runner job.
 
 ## Agent guidance
 
+Repository plugins provide `validate_job` and `phase_commands`; the shared executor
+owns sealing, clean-checkout verification, process launch, phase ordering, and
+bounded findings. Optional `validate_phase`, `protected_inputs`, and
+`phase_environment` hooks carry repository-specific checks and inputs. Repository
+settings cannot replace the controller's Python path or findings destination.
+There are no model-type execution branches or image/generation defaults here.
+Command handlers may be supplied through `repository_handlers` without another
+CLI parser. Model-specific planning and reporting remain participant-owned.
+
 Before changing any participating repository, read this file and preserve these
 ownership boundaries. Shared orchestration belongs here only when it is neutral
 to model type and repository policy. Model-family knowledge stays in the model

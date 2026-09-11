@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from mlx_ci.repository import control, hosted_checks, report
@@ -162,6 +162,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     reporter.set_defaults(handler=_report)
 
     args = parser.parse_args(argv)
+    from ci import plugin
+
+    factory = getattr(plugin, "repository_handlers", None)
+    if factory is not None:
+        handlers = factory()
+        if (
+            not isinstance(handlers, Mapping)
+            or set(handlers) != {"prepare", "plan", "hosted-checks", "report"}
+            or not all(callable(handler) for handler in handlers.values())
+        ):
+            raise ValueError("repository must register all command handlers")
+        return handlers[args.command](args)
     return args.handler(args)
 
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -19,12 +19,15 @@ class ComponentContext:
                 return candidate
         return self.config_directory / relative_path
 
+
 @dataclass(frozen=True)
 class ExecutionContext:
     job_path: Path
     control: Path
     base: Path
     head: Path
+    output: Path | None = None
+    checkpoint_paths: Mapping[str, Path] = field(default_factory=dict)
 
     @property
     def config_directory(self) -> Path:
