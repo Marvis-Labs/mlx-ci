@@ -1,20 +1,22 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
 
-from mlx_ci.contracts import (
-    COMMIT_PATTERN,
-    REPOSITORY_PATTERN,
-    ContractError,
-    validate_request,
-)
-
 
 class GitHubIngressError(ValueError):
     pass
+
+
+COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
+IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+REPOSITORY_PATTERN = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*"
+)
+TIMESTAMP_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z")
 
 
 class GitHubClient(Protocol):
@@ -114,12 +116,7 @@ class GitHubIngress:
             "requester": sender,
             "requested_at": _string(comment.get("created_at"), "comment.created_at"),
         }
-        try:
-            request = validate_request(request)
-        except ContractError as error:
-            raise GitHubIngressError(
-                "GitHub event cannot form a run request"
-            ) from error
+        request = _validate_request(request)
 
         return IngressDecision(
             IngressOutcome.ACCEPTED,
@@ -187,9 +184,7 @@ class GitHubIngress:
             issue_comment_event, delivery_id=f"comment:{comment_id}"
         )
 
-    def _repository_plan_dispatch(
-        self, event: Mapping[str, Any]
-    ) -> IngressDecision:
+    def _repository_plan_dispatch(self, event: Mapping[str, Any]) -> IngressDecision:
         payload = _mapping(event.get("client_payload"), "client_payload")
         if (
             set(payload)
@@ -201,15 +196,13 @@ class GitHubIngress:
         registration = self.registrations.get(repository)
         if registration is None:
             return IngressDecision(IngressOutcome.IGNORED, "repository_not_registered")
-        pull_request_number = _positive_int(
-            payload.get("pull_request"), "pull_request"
-        )
+        pull_request_number = _positive_int(payload.get("pull_request"), "pull_request")
         delivery_id = _positive_int(payload.get("delivery_id"), "delivery_id")
         resolved = self._pull_request(repository, pull_request_number)
         if resolved is None:
             return IngressDecision(IngressOutcome.IGNORED, "pull_request_not_open")
         pull_request, base_sha, head_sha, head_repository = resolved
-        request = validate_request(
+        request = _validate_request(
             {
                 "schema_version": 1,
                 "kind": "run_request",
@@ -302,3 +295,31 @@ def _positive_int(value: Any, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise GitHubIngressError(f"{field} must be a positive integer")
     return value
+
+
+def _validate_request(value: Mapping[str, Any]) -> dict[str, Any]:
+    fields = {
+        "schema_version",
+        "kind",
+        "request_id",
+        "repository",
+        "pull_request",
+        "comment_id",
+        "requester",
+        "requested_at",
+    }
+    if set(value) != fields:
+        raise GitHubIngressError("GitHub request fields are invalid")
+    if value.get("schema_version") != 1 or value.get("kind") != "run_request":
+        raise GitHubIngressError("GitHub request schema is invalid")
+    for field in ("request_id", "requester"):
+        item = value.get(field)
+        if not isinstance(item, str) or IDENTIFIER_PATTERN.fullmatch(item) is None:
+            raise GitHubIngressError(f"GitHub run request {field} is invalid")
+    _repository(value.get("repository"), "request.repository")
+    _positive_int(value.get("pull_request"), "request.pull_request")
+    _positive_int(value.get("comment_id"), "request.comment_id")
+    timestamp = value.get("requested_at")
+    if not isinstance(timestamp, str) or TIMESTAMP_PATTERN.fullmatch(timestamp) is None:
+        raise GitHubIngressError("GitHub request requested_at is invalid")
+    return dict(value)

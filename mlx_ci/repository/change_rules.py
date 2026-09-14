@@ -35,12 +35,25 @@ _UniqueKeyLoader.add_constructor(
 )
 
 
-def load_yaml_mapping(path: Path, max_bytes: int = 2_000_000) -> dict[str, Any]:
+def load_yaml_mapping(
+    path: Path,
+    error_type: type[ValueError] = ValueError,
+    label: str = "YAML configuration",
+    *,
+    max_bytes: int = 2_000_000,
+) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file():
+        raise error_type(f"{path}: {label} is not a real file")
     if path.stat().st_size > max_bytes:
-        raise ValueError(f"{path} exceeds the {max_bytes}-byte configuration limit")
-    data = yaml.load(path.read_text(), Loader=_UniqueKeyLoader)
-    if not isinstance(data, dict):
-        raise ValueError(f"{path} must contain a YAML mapping")
+        raise error_type(f"{path}: {label} exceeds the {max_bytes}-byte limit")
+    try:
+        data = yaml.load(path.read_text(), Loader=_UniqueKeyLoader)
+    except (OSError, UnicodeError, ValueError, yaml.YAMLError) as error:
+        if error_type is ValueError:
+            raise
+        raise error_type(f"{path}: invalid YAML") from error
+    if not isinstance(data, dict) or any(not isinstance(key, str) for key in data):
+        raise error_type(f"{path}: {label} must be a mapping")
     return data
 
 

@@ -1,126 +1,60 @@
 # mlx-ci
 
-Private trusted control plane for Marvis-Labs Apple-silicon CI.
+Shared CI runtime for MLX repositories on Apple silicon.
 
-`mlx-ci` coordinates CI for registered repositories. `mlx-vlm` and `mlx-audio`
-are its first consumers, but the control plane does not know about models,
-modalities, or repository-specific work types. Keep the boundaries below strict.
+## Responsibility
 
-| Repository | Owns |
-| --- | --- |
-| Participating repositories | Declarative change rules, domain catalogs, fixtures, model-specific planners and probes, resource estimates, and a small `ci.plugin` registration surface |
-| `mlx-ci` | Change detection, plan assembly, hosted checks, execution, result validation, bot rendering, GitHub App authorization, global queueing, runner inventory, smallest-fit selection, leases, immutable attempts, retry and escalation, signing, and delivery |
-| `ci-runner` | Machine setup, runner registration, capability and heartbeat reporting, local atomic leases, checkpoint caching, asset staging, sandboxing, cleanup, and execution of sealed work manifests |
+Participating repositories own change rules, checkpoint catalogs, fixtures,
+resource estimates, and domain-specific probes. `mlx-ci` owns GitHub request
+authorization, immutable planning, generic execution, result validation, and PR
+reporting. `ci-runner` owns machine admission, checkpoint caching, sandboxing,
+and cleanup.
 
-## Control flow
+The shared runtime must not contain model-family, modality, or product-specific
+branches. A participant registers its behavior through `ci.plugin`; the central
+runtime treats each resulting work item uniformly.
 
-1. The GitHub App receives an exact `/ci run` comment from an allowlisted
-   repository and verifies the commenter has write or maintain permission.
-2. The control plane resolves immutable base, head, and trusted contract SHAs.
-   Repository CI code always comes from the configured trusted CI ref, never
-   from the pull-request head.
-3. The shared planner loads the repository plugin and emits independent work items with required
-   memory, disk, phases, fixtures, and revision-pinned checkpoints.
-4. The global scheduler selects the smallest live runner that satisfies the
-   work item, acquires a cross-repository lease, and escalates only when the
-   smaller device is occupied, unavailable, or rejects the workload.
-5. `mlx-ci` signs the canonical work manifest. The selected runner verifies the
-   signature and immutable SHAs before entering its restricted sandbox.
-6. The runner executes static and synthetic checks before real checkpoints.
-   Performance runs only after correctness passes.
-7. `mlx-ci` validates the structured result and publishes one shared report to
-   the originating pull request.
+## Flow
 
-## Repository interface
+1. A participant sends a planning request when a pull request changes and a run
+   request after an authorized `/ci run` comment.
+2. The private workflow revalidates the repository, request, permission, and
+   current pull-request revisions.
+3. Planning uses immutable base, head, and trusted contract checkouts. Only the
+   trusted contract supplies executable CI code.
+4. Independent work items are assigned to the smallest configured memory class
+   that can contain them and queued as self-hosted GitHub Actions jobs.
+5. The device broker checks current memory, disk, thermal, and local lease state,
+   stages verified checkpoints, and runs the central executor in its sandbox.
+6. The central reporter validates bounded structured results and posts a new
+   comment for that immutable attempt.
 
-Participating repositories expose `ci.plugin`, declarative configuration under
-`ci/config`, model-specific probes, assets, and hash-pinned `ci/requirements.txt`.
-The shared repository runtime provides planning, hosted checks, execution,
-validation, and reporting commands. The private workflows own authorization,
-immutable checkouts, queue preparation, runner dispatch, artifacts, and comment
-delivery.
+GitHub Actions is the queue and attempt store. There is no second scheduler,
+database, runner polling protocol, or signing service. Dynamic admission failures
+are reported honestly; a later `/ci run` creates a new attempt.
 
-The control plane imports only the participant's narrow plugin contract. Model
-knowledge and inference stay in the model repository; lifecycle and safety
-machinery stay shared so audio and vision-language CI do not fork it.
-The plugin supplies either registered change components or one repository-level
-planner, contributor configuration paths, job, gate, and result validation, and
-phase commands. Labels and contributor-facing failure messages are optional.
-The participant owns its work types, phases, and payload fields.
+## Participant interface
 
-The control plane wraps each repository manifest without interpreting its
-payload. Before dispatch it verifies that work identity, repository, revisions,
-phases, and resource requirements agree across both layers, then restores the
-original flat manifest expected by the generic runner.
+Each repository provides:
 
-Each accepted `/ci run` delivery creates a separate immutable attempt. Replaying
-the same delivery is idempotent, but a later command for the same pull request
-and head revision does not coalesce with earlier work.
+- `ci.plugin` registrations and validation hooks
+- declarative configuration under `ci/config`
+- revision-pinned checkpoints and fixtures
+- probe and comparison code for its own domains
+- a hash-pinned `ci/requirements.txt`
 
-Runner transport is a bounded JSON WSGI interface intended to sit behind a TLS
-reverse proxy. Every device has an independent high-entropy bearer token, while
-trusted ingestion uses a separate credential. The service stores token digests,
-assigns heartbeat timestamps, binds renewals, responses, and results to both the
-runner identity and lease generation, and returns only Ed25519-signed canonical
-manifests. Private signing keys and credential files must be service-owned,
-non-symlinked, and inaccessible to group or other users. Runners trust an
-explicit key-ID-to-public-key map so rotations can overlap without accepting an
-unknown signer.
+Shared code provides change matching, plan construction, hosted checks, manifest
+sealing, phase ordering, isolated probe launch, result ingestion, and rendering.
+The participant cannot replace the executor, findings destination, immutable
+identity, or phase order.
 
-The application factory reads `MLX_CI_STATE_PATH`,
-`MLX_CI_RUNNER_CREDENTIALS`, `MLX_CI_SIGNING_KEY`,
-`MLX_CI_SIGNING_KEY_ID`, and `MLX_CI_QUEUE_TOKEN_DIGEST`. It intentionally does
-not provide a cleartext development server.
+## Deployment invariants
 
-The workflows read `MLX_CI_OWNER` and the newline-separated repository names in
-`MLX_CI_REPOSITORIES` for both GitHub App token scope and ingress registration.
-An empty or invalid list fails closed.
-
-The GitHub Actions dispatch path is a migration bridge until result-triggered
-reporting, runner-side signature polling, and a durable service deployment are
-configured. Participant repositories forward only repository, pull-request, and
-comment identifiers. The private workflow re-fetches and validates the comment,
-maintainer permission, and immutable revisions through the GitHub App before
-preparing work. App credentials never enter a self-hosted runner job.
-
-## Security invariants
-
-- Keep this repository private. The self-hosted runner group must allow only
-  this repository and an exact workflow on its protected default branch.
-- Use a least-privilege GitHub App with an explicit repository allowlist. Do
-  not use a long-lived organization PAT in workflows or on runners.
-- Never execute pull-request workflow code, planners, actions, shell fragments,
-  or bot renderers outside the restricted runner sandbox.
-- Treat pull-request metadata, source trees, artifacts, cache entries, model
-  output, and runner output as untrusted data. Parse and validate every boundary.
-- Seal each job with immutable repository, base, head, contract, and attempt
-  identifiers plus a canonical digest and control-plane signature.
-- Keep checkpoint repositories revision-pinned. Validate exact file paths,
-  sizes, and SHA-256 hashes before publishing or reusing a cache entry.
-- Keep leases global across repositories and atomic. A local runner lease is a
-  second line of defense, not the scheduler's source of truth.
-- Never copy raw runner errors into comments. Emit only validated result and
-  failure classes.
-- Preserve evidence order: static, synthetic, real model, then correctness-gated
-  performance. Report each evidence class honestly and independently.
-
-## Agent guidance
-
-Repository plugins provide `validate_job` and `phase_commands`; the shared executor
-owns sealing, clean-checkout verification, process launch, phase ordering, and
-bounded findings. Optional `validate_phase`, `protected_inputs`, and
-`phase_environment` hooks carry repository-specific checks and inputs. Repository
-settings cannot replace the controller's Python path or findings destination.
-There are no model-type execution branches or image/generation defaults here.
-Model-specific planning and result validation remain participant-owned.
-
-Before changing any participating repository, read this file and preserve these
-ownership boundaries. Shared orchestration belongs here only when it is neutral
-to model type and repository policy. Model-family knowledge stays in the model
-repository; device-specific behavior stays in `ci-runner`.
-
-Changes to a shared contract must be versioned, backward-compatible during
-migration, and tested against `mlx-ci`, `ci-runner`, `mlx-vlm`, and `mlx-audio`.
-Use isolated worktrees, preserve unrelated work, make signed commits, and do not
-enable a workflow or runner group until its trusted path and rollback have been
-verified.
+- Keep the central repository private and restrict its runner group to it.
+- Scope the GitHub App to an explicit owner and repository allowlist.
+- Never execute CI definitions from a pull-request head.
+- Keep App credentials out of self-hosted jobs and sandbox environments.
+- Pin actions and checkpoint revisions, disable checkout credential persistence,
+  and validate every artifact and result boundary.
+- Version shared contracts and validate changes against every participant and
+  the runner before deployment.

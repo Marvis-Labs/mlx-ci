@@ -1,5 +1,8 @@
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
+from mlx_ci.github_dispatch import authorize_dispatch
 from mlx_ci.github_ingress import (
     GitHubIngress,
     GitHubIngressError,
@@ -44,6 +47,11 @@ class FakeGitHub:
     def issue_comment(self, repository, comment_id):
         self.calls.append(("comment", repository, comment_id))
         return self.comment_value
+
+
+class FakeDispatchGitHub(FakeGitHub):
+    def __init__(self, token):
+        super().__init__()
 
 
 class GitHubIngressTests(unittest.TestCase):
@@ -243,6 +251,35 @@ class GitHubIngressTests(unittest.TestCase):
 
         self.assertEqual(decision.outcome, IngressOutcome.IGNORED)
         self.assertEqual(client.calls, [])
+
+    @patch("mlx_ci.github_dispatch.GitHubAPI", FakeDispatchGitHub)
+    def test_dispatch_cli_reauthorizes_forwarded_identity(self):
+        result = authorize_dispatch(
+            self.dispatch_event(),
+            token="token",
+            repositories=["Example/project-one"],
+        )
+
+        self.assertEqual(result["repository"], "Example/project-one")
+        self.assertEqual(result["comment_id"], 42)
+        self.assertEqual(result["base_sha"], "a" * 40)
+        self.assertEqual(result["head_sha"], "b" * 40)
+
+    def test_workflows_keep_privileged_code_off_self_hosted_runners(self):
+        root = Path(__file__).resolve().parents[1]
+        plan = (root / ".github/workflows/repository-plan.yml").read_text()
+        run = (root / ".github/workflows/repository-dispatch.yml").read_text()
+
+        self.assertNotIn("pull_request_target", plan + run)
+        self.assertNotIn("issue_comment", plan + run)
+        self.assertNotIn("queue.json", run)
+        self.assertIn("CI_ORCHESTRATOR_ROOT:", run)
+        self.assertIn("CI_JOB_REPOSITORY:", run)
+        self.assertIn("permissions: {}", plan + run)
+        self.assertNotRegex(plan + run, r"uses:\s+[^\s@]+@(main|master|v\d+)(?:\s|$)")
+        device = run.split("  device:", 1)[1].split("  report:", 1)[0]
+        self.assertNotIn("MLX_CI_APP_PRIVATE_KEY", device)
+        self.assertNotIn("create-github-app-token", device)
 
     @staticmethod
     def ingress(client):

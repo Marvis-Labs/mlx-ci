@@ -1,4 +1,5 @@
 import json
+import sys
 
 import pytest
 
@@ -9,6 +10,8 @@ from mlx_ci.repository.execution_security import (
     validate_job,
     verify_execution,
 )
+from mlx_ci.repository.findings_io import load_record
+from mlx_ci.repository.isolated_probe import ProbeProcessError, run_project_probe
 
 SHA = "a" * 40
 REPOSITORY = "Example/project"
@@ -190,3 +193,37 @@ def test_canonical_digest_is_stable():
     left = {"b": 2, "a": 1}
     right = json.loads(json.dumps(left, sort_keys=True))
     assert canonical_digest(left) == canonical_digest(right)
+
+
+def test_probe_process_scrubs_secrets_and_bounds_failures(monkeypatch, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "import json, os\n"
+        "print(json.dumps({'secret': os.getenv('SECRET_VALUE'), "
+        "'offline': os.getenv('HF_HUB_OFFLINE')}))\n"
+    )
+    monkeypatch.setenv("CI_NETWORK_DISABLED", "1")
+    monkeypatch.setenv("CI_AUDIO_OUTPUT_DISABLED", "1")
+    monkeypatch.setenv("CI_JOB_PYTHON", sys.executable)
+    monkeypatch.setenv("SECRET_VALUE", "never-forward")
+
+    assert json.loads(run_project_probe(project, probe, [])) == {
+        "secret": None,
+        "offline": "1",
+    }
+
+    probe.write_text("raise SystemExit(7)\n")
+    with pytest.raises(ProbeProcessError, match="status 7"):
+        run_project_probe(project, probe, [])
+
+
+def test_findings_reader_rejects_symlinks(tmp_path):
+    target = tmp_path / "target.json"
+    target.write_text('{"verdict":"passed"}')
+    link = tmp_path / "findings.json"
+    link.symlink_to(target)
+
+    with pytest.raises(ValueError, match="real file"):
+        load_record(link)

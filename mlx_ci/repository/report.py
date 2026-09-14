@@ -17,6 +17,7 @@ class ReportError(ValueError):
 
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 FILE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.json")
+MEMORY_LABEL_PATTERN = re.compile(r"memory-(?:16|32|64|128|192|256|512)gb")
 REPOSITORY_PATTERN = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*"
 )
@@ -64,35 +65,53 @@ def build_report(
         )
     ):
         raise ReportError("repository control payload identity is inconsistent")
+    planned_jobs = control.get("jobs")
+    if not isinstance(planned_jobs, list) or any(
+        not isinstance(job, Mapping) or not isinstance(job.get("id"), str)
+        for job in planned_jobs
+    ):
+        raise ReportError("repository control jobs are invalid")
+    manifests = {job["id"]: job for job in planned_jobs}
+    if len(manifests) != len(planned_jobs):
+        raise ReportError("repository control jobs are duplicated")
 
     results = []
     identifiers = set()
     filenames = set()
     for item in device_jobs:
-        if not isinstance(item, Mapping) or not isinstance(
-            item.get("manifest"), Mapping
-        ):
+        if not isinstance(item, Mapping) or set(item) != {
+            "id",
+            "file",
+            "memory_label",
+        }:
             raise ReportError("repository device job is invalid")
+        identifier = item.get("id")
         filename = item.get("file")
+        manifest = manifests.get(identifier)
         if (
-            not isinstance(filename, str)
+            not isinstance(identifier, str)
+            or not isinstance(filename, str)
             or FILE_PATTERN.fullmatch(filename) is None
-            or item.get("id") != item["manifest"].get("id")
-            or item.get("id") in identifiers
+            or not isinstance(item.get("memory_label"), str)
+            or MEMORY_LABEL_PATTERN.fullmatch(item["memory_label"]) is None
+            or not isinstance(manifest, Mapping)
+            or identifier in identifiers
             or filename in filenames
-            or item["manifest"].get("repository") != repository
-            or item["manifest"].get("base_sha") != base_sha
-            or item["manifest"].get("head_sha") != head_sha
-            or item["manifest"].get("contract_sha") != contract_sha
+            or manifest.get("repository") != repository
+            or manifest.get("base_sha") != base_sha
+            or manifest.get("head_sha") != head_sha
+            or manifest.get("contract_sha") != contract_sha
         ):
             raise ReportError("repository device job has no result filename")
-        identifiers.add(item["id"])
+        identifiers.add(identifier)
         filenames.add(filename)
         try:
             raw = _runner_result(results_directory, filename)
         except (OSError, ValueError, ReportError):
             raw = {}
-        results.append(finalize(item["manifest"], raw))
+        results.append(finalize(manifest, raw))
+    if identifiers != set(manifests):
+        raise ReportError("repository device jobs do not match the plan")
 
     record = dict(control)
     outcomes = {str(result.get("outcome", "")) for result in results}

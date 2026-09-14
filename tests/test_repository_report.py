@@ -3,6 +3,7 @@ import json
 import pytest
 
 from mlx_ci.repository.report import ReportError, build_report, render_report
+from mlx_ci.repository.worker_result import finalize
 
 HEAD_SHA = "b" * 40
 BASE_SHA = "a" * 40
@@ -33,7 +34,9 @@ def exported():
         "base_sha": BASE_SHA,
         "head_sha": HEAD_SHA,
         "contract_sha": CONTRACT_SHA,
-        "device_jobs": [{"id": job["id"], "file": "000.json", "manifest": job}],
+        "device_jobs": [
+            {"id": job["id"], "file": "000.json", "memory_label": "memory-16gb"}
+        ],
         "control": {
             "schema_version": 1,
             "kind": "approved_job_plan",
@@ -165,3 +168,21 @@ def test_malformed_result_is_terminal_infrastructure_failure(tmp_path, contents)
     assert record["results"][0]["findings"] == {
         "error": "runner result failed validation"
     }
+
+
+def test_runner_decline_and_identity_tampering_fail_closed():
+    planned = manifest()
+    declined = finalize(
+        planned,
+        runner_result(
+            decision="declined", outcome="declined", reason="declined_memory"
+        ),
+    )
+    tampered = finalize(
+        planned,
+        runner_result(component="different"),
+    )
+
+    assert declined["outcome"] == "no_eligible_runner"
+    assert tampered["outcome"] == "infrastructure_failure"
+    assert tampered["component"] == "model_path"

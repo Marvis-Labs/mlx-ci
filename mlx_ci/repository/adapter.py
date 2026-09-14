@@ -31,6 +31,7 @@ def _prepare(args: argparse.Namespace) -> int:
         run_url=args.run_url,
         output=args.output,
         jobs=args.jobs,
+        github_output=args.github_output,
     )
     return 0
 
@@ -131,6 +132,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     prepare.add_argument("--run-url", required=True)
     prepare.add_argument("--output", type=Path, required=True)
     prepare.add_argument("--jobs", type=Path, required=True)
+    prepare.add_argument("--github-output", type=Path)
     prepare.set_defaults(handler=_prepare)
 
     plan = commands.add_parser("plan")

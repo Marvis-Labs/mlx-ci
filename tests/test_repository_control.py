@@ -1,9 +1,16 @@
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from mlx_ci.repository.change_rules import ChangeContext, ChangeDetector
+from mlx_ci.repository.checkpoint_policy import (
+    CheckpointPolicyError,
+    validate_checkpoint,
+    validate_snapshot,
+)
 from mlx_ci.repository.control import (
     ControlError,
     PlanningOutcome,
@@ -312,10 +319,10 @@ def test_shared_export_preserves_repository_policy_as_opaque_jobs(
     assert exported["terminal_state"] == "planned"
     assert exported["control"]["kind"] == "approved_job_plan"
     assert exported["device_jobs"][0]["file"] == "000.json"
+    assert exported["device_jobs"][0]["memory_label"] == "memory-16gb"
     manifest = json.loads((jobs / "000.json").read_text())
     assert manifest["repository"] == "Example/project"
     assert manifest["head_sha"] == HEAD_SHA
-    assert exported["device_jobs"][0]["manifest"] == manifest
     assert json.loads(output.read_text()) == exported
 
 
@@ -380,3 +387,54 @@ def test_shared_export_never_emits_device_work_for_blocked_plan(monkeypatch, tmp
     assert exported["terminal_state"] == "blocked"
     assert exported["device_jobs"] == []
     assert list((tmp_path / "jobs").iterdir()) == []
+
+
+def test_change_rules_fan_out_without_a_master_decider(tmp_path):
+    rules = tmp_path / "changes.yaml"
+    rules.write_text(
+        "schema_version: 1\nrules:\n"
+        "  docs:\n    component: docs\n    include: ['**/*.md']\n"
+        "  models:\n    component: model_path\n"
+        "    include: ['mlx_vlm/models/{model}/**']\n"
+    )
+    context = ChangeContext.create(["docs/guide.md", "mlx_vlm/models/qwen/model.py"])
+
+    matches = ChangeDetector.from_yaml(rules).detect(context)
+
+    assert {(item.component, item.path) for item in matches} == {
+        ("docs", "docs/guide.md"),
+        ("model_path", "mlx_vlm/models/qwen/model.py"),
+    }
+
+
+def test_checkpoint_policy_supports_bounded_and_exact_manifests(tmp_path):
+    config = json.dumps({"model_type": "example"}).encode()
+    weights = b"weights"
+    (tmp_path / "config.json").write_bytes(config)
+    (tmp_path / "model.safetensors").write_bytes(weights)
+    bounded = {
+        "repo": "example/model",
+        "revision": "a" * 40,
+        "expected_model_type": "example",
+        "weight": {"bytes": len(weights)},
+    }
+    exact = {
+        "status": "configured",
+        **bounded,
+        "weight": {"format": "safetensors", "files": 1, "bytes": len(weights)},
+        "files": [
+            {
+                "path": name,
+                "bytes": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }
+            for name, data in (("config.json", config), ("model.safetensors", weights))
+        ],
+    }
+
+    validate_checkpoint(bounded)
+    validate_checkpoint(exact)
+    assert validate_snapshot(tmp_path, exact)["safetensors"] == 1
+    (tmp_path / "model.safetensors").write_bytes(b"tampered")
+    with pytest.raises(CheckpointPolicyError, match="size does not match"):
+        validate_snapshot(tmp_path, exact)

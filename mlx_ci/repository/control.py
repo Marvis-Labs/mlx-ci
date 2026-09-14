@@ -21,6 +21,7 @@ COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 REPOSITORY_PATTERN = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*"
 )
+MEMORY_CLASSES = (16, 32, 64, 128, 192, 256, 512)
 
 
 class PlanningOutcome(str, Enum):
@@ -374,6 +375,7 @@ def export_repository_plan(
     run_url: str,
     output: Path,
     jobs: Path,
+    github_output: Path | None = None,
 ) -> dict[str, Any]:
     validate_export_identity(
         base_sha,
@@ -447,7 +449,11 @@ def export_repository_plan(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n"
         )
         device_jobs.append(
-            {"id": manifest["id"], "file": filename, "manifest": manifest}
+            {
+                "id": manifest["id"],
+                "file": filename,
+                "memory_label": _memory_label(manifest["required_memory_gib"]),
+            }
         )
     exported = {
         "schema_version": 1,
@@ -461,7 +467,21 @@ def export_repository_plan(
         "control": released,
     }
     output.write_text(json.dumps(exported, indent=2, sort_keys=True) + "\n")
+    if github_output is not None:
+        matrix = {"include": device_jobs}
+        with github_output.open("a") as stream:
+            stream.write(f"has_work={str(bool(device_jobs)).lower()}\n")
+            stream.write("matrix=" + json.dumps(matrix, separators=(",", ":")) + "\n")
     return exported
+
+
+def _memory_label(required_memory_gib: int) -> str:
+    selected = next(
+        (value for value in MEMORY_CLASSES if value >= required_memory_gib), None
+    )
+    if selected is None:
+        raise ControlError("job exceeds the largest runner memory class")
+    return f"memory-{selected}gb"
 
 
 def validate_export_identity(
