@@ -1,0 +1,308 @@
+name: Repository Apple-silicon CI
+
+on:
+  repository_dispatch:
+    types: [ci-run-request]
+
+permissions: {}
+
+concurrency:
+  group: ci-request-${{ github.event.client_payload.repository }}-${{ github.event.client_payload.comment_id }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      base: ${{ steps.authorization.outputs.base_sha }}
+      already_reported: ${{ steps.deduplication.outputs.already_reported || 'false' }}
+      comment_id: ${{ steps.authorization.outputs.comment_id }}
+      contract: ${{ steps.authorization.outputs.contract_sha }}
+      head: ${{ steps.authorization.outputs.head_sha }}
+      head_repository: ${{ steps.authorization.outputs.head_repository }}
+      has_work: ${{ steps.planning.outputs.has_work || 'false' }}
+      matrix: ${{ steps.planning.outputs.matrix || '{"include":[]}' }}
+      pull_request: ${{ steps.authorization.outputs.pull_request }}
+      repository: ${{ steps.authorization.outputs.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: orchestrator
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          client-id: ${{ vars.MLX_CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.MLX_CI_APP_PRIVATE_KEY }}
+          owner: ${{ vars.MLX_CI_OWNER }}
+          repositories: ${{ vars.MLX_CI_REPOSITORIES }}
+          permission-contents: read
+          permission-issues: read
+          permission-pull-requests: read
+      - name: Authorize immutable run
+        id: authorization
+        env:
+          ALLOWED_REPOSITORIES: ${{ vars.MLX_CI_REPOSITORIES }}
+          CI_OWNER: ${{ vars.MLX_CI_OWNER }}
+          GITHUB_APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          PYTHONPATH=orchestrator python -m mlx_ci.github_dispatch \
+            --event "$GITHUB_EVENT_PATH" \
+            --owner "$CI_OWNER" \
+            --repositories "$ALLOWED_REPOSITORIES" \
+            --output authorization.json \
+            --github-output "$GITHUB_OUTPUT"
+      - name: Check prior delivery
+        id: deduplication
+        env:
+          APP_LOGIN: ${{ steps.app-token.outputs.app-slug }}[bot]
+          COMMENT_ID: ${{ steps.authorization.outputs.comment_id }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ steps.authorization.outputs.pull_request }}
+          REPOSITORY: ${{ steps.authorization.outputs.repository }}
+        run: |
+          marker="<!-- mlx-ci-request:$COMMENT_ID -->"
+          if gh api "repos/$REPOSITORY/issues/$PR_NUMBER/comments" --paginate --slurp \
+            | jq -r --arg login "$APP_LOGIN" '.[][] | select(.user.login == $login) | .body' \
+            | grep -Fqx "$marker"; then
+            printf 'already_reported=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'already_reported=false\n' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.deduplication.outputs.already_reported != 'true'
+        with:
+          path: control
+          repository: ${{ steps.authorization.outputs.repository }}
+          ref: ${{ steps.authorization.outputs.contract_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          token: ${{ steps.app-token.outputs.token }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.deduplication.outputs.already_reported != 'true'
+        with:
+          path: base
+          repository: ${{ steps.authorization.outputs.repository }}
+          ref: ${{ steps.authorization.outputs.base_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          token: ${{ steps.app-token.outputs.token }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.deduplication.outputs.already_reported != 'true'
+        with:
+          path: head
+          repository: ${{ steps.authorization.outputs.head_repository }}
+          ref: ${{ steps.authorization.outputs.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          token: ${{ steps.app-token.outputs.token }}
+      - name: Verify immutable checkouts
+        if: steps.deduplication.outputs.already_reported != 'true'
+        env:
+          BASE_SHA: ${{ steps.authorization.outputs.base_sha }}
+          CONTRACT_SHA: ${{ steps.authorization.outputs.contract_sha }}
+          HEAD_SHA: ${{ steps.authorization.outputs.head_sha }}
+        run: |
+          [[ "$(git -C control rev-parse --verify HEAD^{commit})" == "$CONTRACT_SHA" ]]
+          [[ "$(git -C base rev-parse --verify HEAD^{commit})" == "$BASE_SHA" ]]
+          [[ "$(git -C head rev-parse --verify HEAD^{commit})" == "$HEAD_SHA" ]]
+          for checkout in control base head; do
+            [[ -z "$(git -C "$checkout" config --local --get-regexp '^http\..*\.extraheader$' || true)" ]]
+            [[ -z "$(git -C "$checkout" status --porcelain=v1 --untracked-files=all)" ]]
+          done
+      - name: Package immutable repository sources
+        if: steps.deduplication.outputs.already_reported != 'true'
+        run: |
+          tar -cf control.tar -C control .
+          tar -cf base.tar -C base .
+          tar -cf head.tar -C head .
+          shasum -a 256 control.tar base.tar head.tar > sources.sha256
+      - name: Install repository-owned hosted dependencies
+        if: steps.deduplication.outputs.already_reported != 'true'
+        run: python -m pip install --quiet --require-hashes -r control/ci/requirements.txt
+      - name: Build repository work manifests
+        id: planning
+        if: steps.deduplication.outputs.already_reported != 'true'
+        env:
+          ATTEMPT_ID: ${{ github.run_id }}
+          BASE_SHA: ${{ steps.authorization.outputs.base_sha }}
+          CONTRACT_SHA: ${{ steps.authorization.outputs.contract_sha }}
+          HEAD_SHA: ${{ steps.authorization.outputs.head_sha }}
+          PR_NUMBER: ${{ steps.authorization.outputs.pull_request }}
+          REPOSITORY: ${{ steps.authorization.outputs.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          PYTHONPATH=orchestrator:control python -m mlx_ci.repository.adapter prepare \
+            --repository-path control \
+            --base-checkout base \
+            --head-checkout head \
+            --base-sha "$BASE_SHA" \
+            --head-sha "$HEAD_SHA" \
+            --contract-sha "$CONTRACT_SHA" \
+            --attempt-id "$ATTEMPT_ID" \
+            --repository "$REPOSITORY" \
+            --pr-number "$PR_NUMBER" \
+            --run-url "$RUN_URL" \
+            --output control.json \
+            --jobs jobs \
+            --github-output "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always() && steps.deduplication.outputs.already_reported != 'true'
+        with:
+          name: repository-ci-control-${{ github.run_id }}
+          path: |
+            authorization.json
+            control.json
+            jobs
+            control.tar
+            base.tar
+            head.tar
+            sources.sha256
+          retention-days: 1
+
+  device:
+    needs: prepare
+    if: needs.prepare.result == 'success' && needs.prepare.outputs.has_work == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on:
+      group: marvis-apple-silicon
+      labels:
+        - self-hosted
+        - marvis-ci
+        - apple-silicon
+        - mlx-ci-sandbox-v1
+        - ${{ matrix.memory_label }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: orchestrator
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: repository-ci-control-${{ github.run_id }}
+          path: dispatch
+      - name: Verify and extract immutable sources
+        run: |
+          cd dispatch
+          shasum -a 256 -c sources.sha256
+          mkdir "$RUNNER_TEMP/control" "$RUNNER_TEMP/base" "$RUNNER_TEMP/head"
+          tar -xf control.tar -C "$RUNNER_TEMP/control"
+          tar -xf base.tar -C "$RUNNER_TEMP/base"
+          tar -xf head.tar -C "$RUNNER_TEMP/head"
+      - name: Execute sealed repository work
+        env:
+          CI_JOB_REPOSITORY: ${{ needs.prepare.outputs.repository }}
+          CI_ORCHESTRATOR_ROOT: ${{ github.workspace }}/orchestrator
+          JOB_FILE: ${{ matrix.file }}
+          PYTHONPATH: ${{ github.workspace }}/orchestrator:${{ runner.temp }}/control
+        run: |
+          /usr/local/libexec/marvis-ci/RUN_JOB.sh \
+            "$GITHUB_WORKSPACE/dispatch/jobs/$JOB_FILE" \
+            "$GITHUB_WORKSPACE/$JOB_FILE.result.json" \
+            -- /usr/bin/python3 -m mlx_ci.repository.executor \
+            --job "$GITHUB_WORKSPACE/dispatch/jobs/$JOB_FILE" \
+            --control "$RUNNER_TEMP/control" \
+            --base "$RUNNER_TEMP/base" \
+            --head "$RUNNER_TEMP/head"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: repository-ci-result-${{ github.run_id }}-${{ strategy.job-index }}
+          path: ${{ matrix.file }}.result.json
+          retention-days: 1
+
+  report:
+    needs: [prepare, device]
+    if: >
+      always() &&
+      needs.prepare.outputs.repository != '' &&
+      needs.prepare.outputs.already_reported != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          client-id: ${{ vars.MLX_CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.MLX_CI_APP_PRIVATE_KEY }}
+          owner: ${{ vars.MLX_CI_OWNER }}
+          repositories: ${{ vars.MLX_CI_REPOSITORIES }}
+          permission-contents: read
+          permission-issues: write
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: orchestrator
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: control
+          repository: ${{ needs.prepare.outputs.repository }}
+          ref: ${{ needs.prepare.outputs.contract }}
+          persist-credentials: false
+          token: ${{ steps.app-token.outputs.token }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        id: artifacts
+        continue-on-error: true
+        with:
+          pattern: repository-ci-*-${{ github.run_id }}*
+          path: artifacts
+          merge-multiple: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install repository-owned hosted dependencies
+        id: dependencies
+        if: steps.artifacts.outcome == 'success'
+        continue-on-error: true
+        run: python -m pip install --quiet --require-hashes -r control/ci/requirements.txt
+      - name: Render trusted repository report
+        id: renderer
+        if: steps.dependencies.outcome == 'success'
+        continue-on-error: true
+        env:
+          ATTEMPT_ID: ${{ github.run_id }}
+          HEAD_SHA: ${{ needs.prepare.outputs.head }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          PYTHONPATH=orchestrator:control python -m mlx_ci.repository.adapter report \
+            --control artifacts/control.json \
+            --results artifacts \
+            --run-url "$RUN_URL" \
+            --attempt-id "$ATTEMPT_ID" \
+            --head-sha "$HEAD_SHA" \
+            --output report.md
+      - name: Render infrastructure fallback
+        if: always() && steps.renderer.outcome != 'success'
+        env:
+          ATTEMPT_ID: ${{ github.run_id }}
+          PREPARE_STATUS: ${{ needs.prepare.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          printf 'CI infrastructure failure\n\nAttempt: `%s`  \nWorkflow: %s  \nPrepare: `%s`\n' \
+            "$ATTEMPT_ID" "$RUN_URL" "$PREPARE_STATUS" > report.md
+      - name: Publish repository report
+        if: always()
+        env:
+          COMMENT_ID: ${{ needs.prepare.outputs.comment_id }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ needs.prepare.outputs.pull_request }}
+          REPOSITORY: ${{ needs.prepare.outputs.repository }}
+        run: |
+          printf '\n<!-- mlx-ci-request:%s -->\n' "$COMMENT_ID" >> report.md
+          gh api "repos/$REPOSITORY/issues/$PR_NUMBER/comments" -F body=@report.md
