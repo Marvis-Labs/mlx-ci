@@ -186,3 +186,17 @@ def test_runner_decline_and_identity_tampering_fail_closed():
     assert declined["outcome"] == "no_eligible_runner"
     assert tampered["outcome"] == "infrastructure_failure"
     assert tampered["component"] == "model_path"
+
+
+def test_performance_regression_is_distinct_from_correctness_failure():
+    result = finalize(
+        manifest(),
+        runner_result(
+            outcome="regressed",
+            reason="performance_regression",
+            findings={"verdict": "regressed"},
+        ),
+    )
+
+    assert result["outcome"] == "regressed"
+    assert result["reason"] == "performance_regression"

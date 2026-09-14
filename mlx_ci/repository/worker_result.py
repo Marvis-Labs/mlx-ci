@@ -139,8 +139,8 @@ def finalize(
         "checkpoint_internal_error",
         "checkpoint_not_found",
         "checkpoint_policy_failed",
-        "correctness_regression",
         "network_transient",
+        "performance_regression",
     }
     if (decision == "accepted" and reason not in accepted_reasons) or (
         decision == "declined" and reason not in decline_reasons
@@ -153,7 +153,7 @@ def finalize(
     expected_reasons = {
         "accepted": {None},
         "passed": {None},
-        "regressed": {"correctness_regression"},
+        "regressed": {"performance_regression"},
         "infrastructure_failure": {"network_transient"},
     }
     if (
