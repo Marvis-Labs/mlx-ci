@@ -28,8 +28,8 @@ modalities, or repository-specific work types. Keep the boundaries below strict.
    signature and immutable SHAs before entering its restricted sandbox.
 6. The runner executes static and synthetic checks before real checkpoints.
    Performance runs only after correctness passes.
-7. `mlx-ci` validates the structured result and publishes the repository-owned
-   rendering to the originating pull request.
+7. `mlx-ci` validates the structured result and publishes one shared report to
+   the originating pull request.
 
 ## Repository interface
 
@@ -43,9 +43,10 @@ delivery.
 The control plane imports only the participant's narrow plugin contract. Model
 knowledge and inference stay in the model repository; lifecycle and safety
 machinery stay shared so audio and vision-language CI do not fork it.
-The plugin supplies planners, contributor configuration paths, job and gate
-validation, and phase commands; labels and contributor-facing failure messages
-are optional. The participant owns its work types, phases, and payload fields.
+The plugin supplies either registered change components or one repository-level
+planner, contributor configuration paths, job, gate, and result validation, and
+phase commands. Labels and contributor-facing failure messages are optional.
+The participant owns its work types, phases, and payload fields.
 
 The control plane wraps each repository manifest without interpreting its
 payload. Before dispatch it verifies that work identity, repository, revisions,
@@ -70,6 +71,10 @@ The application factory reads `MLX_CI_STATE_PATH`,
 `MLX_CI_RUNNER_CREDENTIALS`, `MLX_CI_SIGNING_KEY`,
 `MLX_CI_SIGNING_KEY_ID`, and `MLX_CI_QUEUE_TOKEN_DIGEST`. It intentionally does
 not provide a cleartext development server.
+
+The workflows read `MLX_CI_OWNER` and the newline-separated repository names in
+`MLX_CI_REPOSITORIES` for both GitHub App token scope and ingress registration.
+An empty or invalid list fails closed.
 
 The GitHub Actions dispatch path is a migration bridge until result-triggered
 reporting, runner-side signature polling, and a durable service deployment are
@@ -107,8 +112,7 @@ bounded findings. Optional `validate_phase`, `protected_inputs`, and
 `phase_environment` hooks carry repository-specific checks and inputs. Repository
 settings cannot replace the controller's Python path or findings destination.
 There are no model-type execution branches or image/generation defaults here.
-Command handlers may be supplied through `repository_handlers` without another
-CLI parser. Model-specific planning and reporting remain participant-owned.
+Model-specific planning and result validation remain participant-owned.
 
 Before changing any participating repository, read this file and preserve these
 ownership boundaries. Shared orchestration belongs here only when it is neutral

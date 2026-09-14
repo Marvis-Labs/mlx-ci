@@ -3,12 +3,13 @@ from __future__ import annotations
 import os
 import subprocess
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
 from mlx_ci.repository.change_rules import ChangeContext, ChangeDetector, ChangeMatch
+from mlx_ci.repository.components import ComponentContext
 
 
 class ChangeComponent(Protocol):
@@ -102,6 +103,35 @@ def create_delegator(
             contributor_config_directory,
         ),
     )
+
+
+def plan_changes(
+    context: ChangeContext,
+    rules_config: Path,
+    contributor_config_directory: Path | None = None,
+    repository: Path | None = None,
+) -> dict[str, Any]:
+    from ci import plugin
+
+    repository_path = repository or rules_config.parents[2]
+    factory = getattr(plugin, "plan_changes", None)
+    if factory is None:
+        return create_delegator(
+            rules_config,
+            contributor_config_directory,
+            repository_path,
+        ).plan_context(context)
+    result = factory(
+        context,
+        ComponentContext(
+            rules_config.parents[1],
+            repository_path,
+            contributor_config_directory,
+        ),
+    )
+    if not isinstance(result, Mapping):
+        raise ValueError("repository planner must return a plan mapping")
+    return dict(result)
 
 
 @dataclass(frozen=True)

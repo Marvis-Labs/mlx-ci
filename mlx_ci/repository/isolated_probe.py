@@ -18,12 +18,14 @@ def run_project_probe(
     probe: Path,
     arguments: Sequence[str],
     *,
+    control: Path | None = None,
+    python_path: Sequence[Path] = (),
     environment: Mapping[str, str] | None = None,
     timeout_seconds: int = 900,
 ) -> bytes:
     if os.environ.get("CI_NETWORK_DISABLED") != "1":
         raise ProbeProcessError("probe execution requires network isolation")
-    if os.environ.get("CI_AUDIO_OUTPUT_DISABLED") != "1":
+    if os.environ.get("CI_AUDIO_OUTPUT_DISABLED") not in {None, "1"}:
         raise ProbeProcessError("probe execution requires audio-output isolation")
     if timeout_seconds <= 0 or timeout_seconds > 3600:
         raise ProbeProcessError("probe timeout is outside the allowed range")
@@ -81,6 +83,14 @@ def run_project_probe(
         )
         if name in os.environ
     }
+    import_paths = dict.fromkeys(
+        (
+            *(str(path.resolve(strict=True)) for path in python_path),
+            str(Path(__file__).resolve().parents[2]),
+            *((str(control.resolve(strict=True)),) if control is not None else ()),
+            str(project_root),
+        )
+    )
     allowed_environment.update(
         {
             "CI_AUDIO_OUTPUT_DISABLED": "1",
@@ -89,7 +99,7 @@ def run_project_probe(
             "HF_HUB_OFFLINE": "1",
             "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONNOUSERSITE": "1",
-            "PYTHONPATH": str(project_root),
+            "PYTHONPATH": os.pathsep.join(import_paths),
             "TRANSFORMERS_OFFLINE": "1",
         }
     )

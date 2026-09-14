@@ -161,6 +161,14 @@ def finalize(
         and reason not in expected_reasons[result["outcome"]]
     ):
         return _infrastructure_failure(job, "runner result failed validation")
+    try:
+        from ci import plugin
+
+        validate_result = getattr(plugin, "validate_result", None)
+        if validate_result is not None:
+            validate_result(result, job)
+    except (ImportError, TypeError, ValueError):
+        return _infrastructure_failure(job, "runner result failed validation")
 
     output = dict(result)
     output.update(

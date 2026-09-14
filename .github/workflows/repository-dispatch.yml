@@ -41,22 +41,22 @@ jobs:
         with:
           client-id: ${{ vars.MLX_CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.MLX_CI_APP_PRIVATE_KEY }}
-          owner: Marvis-Labs
-          repositories: |
-            mlx-vlm
-            mlx-audio
+          owner: ${{ vars.MLX_CI_OWNER }}
+          repositories: ${{ vars.MLX_CI_REPOSITORIES }}
           permission-contents: read
           permission-issues: read
           permission-pull-requests: read
       - name: Authorize immutable run
         id: authorization
         env:
+          ALLOWED_REPOSITORIES: ${{ vars.MLX_CI_REPOSITORIES }}
+          CI_OWNER: ${{ vars.MLX_CI_OWNER }}
           GITHUB_APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           PYTHONPATH=orchestrator python -m mlx_ci.github_dispatch \
             --event "$GITHUB_EVENT_PATH" \
-            --repository Marvis-Labs/mlx-vlm \
-            --repository Marvis-Labs/mlx-audio \
+            --owner "$CI_OWNER" \
+            --repositories "$ALLOWED_REPOSITORIES" \
             --output authorization.json \
             --github-output "$GITHUB_OUTPUT"
       - name: Check prior delivery
@@ -246,10 +246,8 @@ jobs:
         with:
           client-id: ${{ vars.MLX_CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.MLX_CI_APP_PRIVATE_KEY }}
-          owner: Marvis-Labs
-          repositories: |
-            mlx-vlm
-            mlx-audio
+          owner: ${{ vars.MLX_CI_OWNER }}
+          repositories: ${{ vars.MLX_CI_REPOSITORIES }}
           permission-contents: read
           permission-issues: write
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

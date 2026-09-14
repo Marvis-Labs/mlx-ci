@@ -14,7 +14,7 @@ import yaml
 
 from mlx_ci.repository.change_rules import load_yaml_mapping
 from mlx_ci.repository.component_config import materialize
-from mlx_ci.repository.planning import create_delegator, diff_from_git
+from mlx_ci.repository.planning import diff_from_git, plan_changes
 from mlx_ci.repository.rendering import BotOutput
 
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
@@ -329,13 +329,13 @@ def plan_repository(
     github_output: Path | None = None,
 ) -> dict[str, Any]:
     try:
-        delegator = create_delegator(
+        diff = diff_from_git(base, head, repository_path)
+        plan = plan_changes(
+            diff.context(),
             rules_config,
             component_config_directory,
             repository_path,
         )
-        diff = diff_from_git(base, head, repository_path)
-        plan = delegator.plan_context(diff.context())
         refused = _refused_paths(diff.changed_files, protected_config)
         if refused:
             plan["blocked"].append(
@@ -390,13 +390,13 @@ def export_repository_plan(
         with tempfile.TemporaryDirectory(prefix="repository-ci-") as temporary:
             contributor_config = Path(temporary)
             materialize(repository_path, head_sha, contributor_config)
-            delegator = create_delegator(
+            diff = diff_from_git(base_sha, head_sha, repository_path)
+            plan = plan_changes(
+                diff.context(),
                 config_directory / "config/changes.yaml",
                 contributor_config,
                 repository_path,
             )
-            diff = diff_from_git(base_sha, head_sha, repository_path)
-            plan = delegator.plan_context(diff.context())
             refused = _refused_paths(
                 diff.changed_files, config_directory / "config/protected-paths.yaml"
             )

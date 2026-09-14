@@ -40,7 +40,9 @@ def authorize_dispatch(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--event", type=Path, required=True)
-    parser.add_argument("--repository", action="append", required=True)
+    parser.add_argument("--owner")
+    parser.add_argument("--repository", action="append", default=[])
+    parser.add_argument("--repositories")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--github-output", type=Path)
     args = parser.parse_args(argv)
@@ -50,7 +52,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not isinstance(event, Mapping):
         raise GitHubIngressError("GitHub event must be an object")
     token = os.environ.get("GITHUB_APP_TOKEN", "")
-    result = authorize_dispatch(event, token=token, repositories=args.repository)
+    configured = [
+        *args.repository,
+        *(
+            line.strip()
+            for line in (args.repositories or "").splitlines()
+            if line.strip()
+        ),
+    ]
+    if not configured:
+        raise GitHubIngressError("at least one repository must be registered")
+    repositories = [
+        value if "/" in value else f"{args.owner}/{value}"
+        for value in configured
+        if args.owner or "/" in value
+    ]
+    if len(repositories) != len(configured):
+        raise GitHubIngressError("repository names require an owner")
+    result = authorize_dispatch(event, token=token, repositories=repositories)
     temporary = args.output.with_suffix(args.output.suffix + ".tmp")
     temporary.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     os.replace(temporary, args.output)

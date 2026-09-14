@@ -287,13 +287,10 @@ def test_shared_export_preserves_repository_policy_as_opaque_jobs(
     repository_root = PARTICIPANT_ROOT
     planned = plan(jobs=[pending_work()])
     diff = SimpleNamespace(changed_files=(), context=lambda: object())
-    delegator = SimpleNamespace(plan_context=lambda context: planned)
     monkeypatch.setattr("mlx_ci.repository.control.import_checkout", lambda *args: None)
     monkeypatch.setattr("mlx_ci.repository.control.materialize", lambda *args: ())
     monkeypatch.setattr("mlx_ci.repository.control.diff_from_git", lambda *args: diff)
-    monkeypatch.setattr(
-        "mlx_ci.repository.control.create_delegator", lambda *args: delegator
-    )
+    monkeypatch.setattr("mlx_ci.repository.control.plan_changes", lambda *args: planned)
     output = tmp_path / "control.json"
     jobs = tmp_path / "jobs"
 
@@ -357,13 +354,10 @@ def test_shared_export_never_emits_device_work_for_blocked_plan(monkeypatch, tmp
     repository_root = PARTICIPANT_ROOT
     planned = plan(jobs=[pending_work()])
     diff = SimpleNamespace(changed_files=("ci/control.py",), context=lambda: object())
-    delegator = SimpleNamespace(plan_context=lambda context: planned)
     monkeypatch.setattr("mlx_ci.repository.control.import_checkout", lambda *args: None)
     monkeypatch.setattr("mlx_ci.repository.control.materialize", lambda *args: ())
     monkeypatch.setattr("mlx_ci.repository.control.diff_from_git", lambda *args: diff)
-    monkeypatch.setattr(
-        "mlx_ci.repository.control.create_delegator", lambda *args: delegator
-    )
+    monkeypatch.setattr("mlx_ci.repository.control.plan_changes", lambda *args: planned)
     monkeypatch.setattr(
         "mlx_ci.repository.control._refused_paths", lambda *args: ["ci/control.py"]
     )
