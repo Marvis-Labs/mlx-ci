@@ -1,0 +1,89 @@
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from runners.contract import ContractError
+from runners.engines import load_engines
+from runners.github import resolve_request
+from runners.prepare import prepare
+
+
+ENGINES = load_engines(Path(__file__).resolve().parents[1] / "engines")
+
+
+class GitHubTests(unittest.TestCase):
+    def setUp(self):
+        self.request = {
+            "schema_version": 1,
+            "engine": "vlm",
+            "repository": "Marvis-Labs/mlx-vlm",
+            "pull_request": 42,
+            "comment_id": 123,
+        }
+        repository = self.request["repository"]
+        self.responses = {
+            f"repos/{repository}/issues/comments/123": {
+                "id": 123,
+                "body": "/ci run",
+                "issue_url": f"https://api.github.com/repos/{repository}/issues/42",
+                "user": {"login": "Lazarus-931"},
+            },
+            f"repos/{repository}/pulls/42": {
+                "number": 42,
+                "state": "open",
+                "base": {
+                    "ref": "main",
+                    "sha": "a" * 40,
+                    "repo": {"full_name": repository},
+                },
+                "head": {
+                    "sha": "b" * 40,
+                    "repo": {"full_name": "contributor/mlx-vlm"},
+                },
+            },
+            f"repos/{repository}/branches/main": {"commit": {"sha": "a" * 40}},
+        }
+
+    def resolve(self):
+        return resolve_request(self.request, ENGINES, self.responses.__getitem__)
+
+    def test_resolves_main_and_pr_head_from_github(self):
+        attempt = self.resolve()
+        self.assertEqual(attempt["base_sha"], "a" * 40)
+        self.assertEqual(attempt["head_sha"], "b" * 40)
+        self.assertEqual(attempt["contract_sha"], "a" * 40)
+
+    def test_non_maintainer_is_rejected(self):
+        self.responses["repos/Marvis-Labs/mlx-vlm/issues/comments/123"]["user"][
+            "login"
+        ] = "outsider"
+        with self.assertRaises(ContractError):
+            self.resolve()
+
+    def test_main_must_match_pr_base(self):
+        self.responses["repos/Marvis-Labs/mlx-vlm/branches/main"]["commit"]["sha"] = (
+            "c" * 40
+        )
+        with self.assertRaises(ContractError):
+            self.resolve()
+
+    def test_audio_engine_is_registered(self):
+        self.assertEqual(ENGINES["audio"]["repository"], "Marvis-Labs/mlx-audio")
+
+    def test_head_repository_cannot_be_a_path_or_url(self):
+        self.responses["repos/Marvis-Labs/mlx-vlm/pulls/42"]["head"]["repo"][
+            "full_name"
+        ] = "../untrusted"
+        with self.assertRaises(ContractError):
+            self.resolve()
+
+    def test_prepare_accepts_only_the_registered_dispatch(self):
+        event = {"action": "ci-run-request", "client_payload": self.request}
+        directory = Path(__file__).resolve().parents[1] / "engines"
+        with patch(
+            "runners.prepare.github_get",
+            side_effect=lambda path, _: self.responses[path],
+        ):
+            self.assertEqual(prepare(event, directory, "token")["head_sha"], "b" * 40)
+        with self.assertRaises(ContractError):
+            prepare({**event, "action": "other"}, directory, "token")
