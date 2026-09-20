@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from runners.contract import ContractError, read_json
+from runners.contract import ContractError, read_json, validate_attempt
 from runners.engines import load_engines
 from runners.github import resolve_request
 
@@ -39,14 +39,19 @@ def github_get(path: str, token: str) -> dict:
     return value
 
 
-def prepare(event: dict, engines_directory: Path, token: str) -> dict:
+def prepare(
+    event: dict, engines_directory: Path, token: str, run_id: int, run_attempt: int
+) -> dict:
     if event.get("action") != "ci-run-request":
         raise ContractError("unsupported event")
     payload = event.get("client_payload")
     if not isinstance(payload, dict):
         raise ContractError("request payload is invalid")
     engines = load_engines(engines_directory)
-    return resolve_request(payload, engines, lambda path: github_get(path, token))
+    attempt = resolve_request(payload, engines, lambda path: github_get(path, token))
+    attempt.update(schema_version=1, run_id=run_id, run_attempt=run_attempt)
+    repositories = {name: engine["repository"] for name, engine in engines.items()}
+    return validate_attempt(attempt, repositories)
 
 
 def main() -> int:
@@ -58,7 +63,14 @@ def main() -> int:
     token = os.environ.get("GH_TOKEN", "")
     if len(token) < 20 or "\n" in token:
         raise ContractError("GitHub App token is unavailable")
-    attempt = prepare(read_json(arguments.event), arguments.engines, token)
+    try:
+        run_id = int(os.environ["GITHUB_RUN_ID"])
+        run_attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
+    except (KeyError, ValueError) as error:
+        raise ContractError("workflow run identity is unavailable") from error
+    attempt = prepare(
+        read_json(arguments.event), arguments.engines, token, run_id, run_attempt
+    )
     with tempfile.NamedTemporaryFile(
         mode="w", encoding="utf-8", dir=arguments.output.parent, delete=False
     ) as stream:

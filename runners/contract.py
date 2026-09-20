@@ -93,6 +93,55 @@ def validate_request(value: Any, repositories: dict[str, str]) -> dict[str, Any]
     return request
 
 
+def validate_attempt(value: Any, repositories: dict[str, str]) -> dict[str, Any]:
+    attempt = _fields(
+        value,
+        {
+            "schema_version",
+            "engine",
+            "repository",
+            "pull_request",
+            "comment_id",
+            "base_sha",
+            "head_sha",
+            "head_repository",
+            "contract_sha",
+            "run_id",
+            "run_attempt",
+        },
+        "attempt",
+    )
+    validate_request(
+        {
+            key: attempt[key]
+            for key in (
+                "schema_version",
+                "engine",
+                "repository",
+                "pull_request",
+                "comment_id",
+            )
+        },
+        repositories,
+    )
+    for field in ("base_sha", "head_sha", "contract_sha"):
+        _sha(attempt[field], field)
+    if (
+        attempt["contract_sha"] != attempt["base_sha"]
+        or attempt["base_sha"] == attempt["head_sha"]
+    ):
+        raise ContractError("attempt revisions are invalid")
+    head_repository = attempt["head_repository"]
+    if (
+        not isinstance(head_repository, str)
+        or REPOSITORY.fullmatch(head_repository) is None
+    ):
+        raise ContractError("head repository is invalid")
+    _int(attempt["run_id"], "run_id", 10**18)
+    _int(attempt["run_attempt"], "run_attempt", 1_000)
+    return attempt
+
+
 def validate_job(value: Any, repositories: dict[str, str]) -> dict[str, Any]:
     job = _fields(
         value,

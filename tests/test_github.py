@@ -84,6 +84,19 @@ class GitHubTests(unittest.TestCase):
             "runners.prepare.github_get",
             side_effect=lambda path, _: self.responses[path],
         ):
-            self.assertEqual(prepare(event, directory, "token")["head_sha"], "b" * 40)
+            attempt = prepare(event, directory, "token", 17, 2)
+            self.assertEqual(attempt["head_sha"], "b" * 40)
+            self.assertEqual(attempt["run_id"], 17)
+            self.assertEqual(attempt["run_attempt"], 2)
         with self.assertRaises(ContractError):
-            prepare({**event, "action": "other"}, directory, "token")
+            prepare({**event, "action": "other"}, directory, "token", 17, 2)
+
+    def test_prepare_rejects_invalid_run_identity(self):
+        event = {"action": "ci-run-request", "client_payload": self.request}
+        directory = Path(__file__).resolve().parents[1] / "engines"
+        with patch(
+            "runners.prepare.github_get",
+            side_effect=lambda path, _: self.responses[path],
+        ):
+            with self.assertRaises(ContractError):
+                prepare(event, directory, "token", 0, 1)
