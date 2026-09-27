@@ -12,6 +12,10 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+    outputs:
+      has_jobs: ${{ steps.matrix.outputs.has_jobs }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      repository: ${{ steps.prepare.outputs.repository }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -59,6 +63,13 @@ jobs:
           --plan plan.json
           --engines engines
           --output jobs.json
+      - name: Build runner matrix
+        id: matrix
+        run: >-
+          python -m runners.actions matrix
+          --jobs jobs.json
+          --engines engines
+          --github-output "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: ci-attempt-${{ github.run_id }}-${{ github.run_attempt }}
@@ -68,3 +79,150 @@ jobs:
             jobs.json
           if-no-files-found: error
           retention-days: 7
+
+  execute:
+    needs: prepare
+    if: needs.prepare.outputs.has_jobs == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on:
+      group: marvis-apple-silicon
+      labels: ${{ matrix.memory_label }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ci-attempt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: request
+      - name: Extract sealed job
+        run: >-
+          python -m runners.actions job
+          --jobs request/jobs.json
+          --job-id "${{ matrix.job_id }}"
+          --engines engines
+          --output job.json
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: ${{ matrix.repository }}
+          ref: ${{ matrix.contract_sha }}
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: ${{ matrix.repository }}
+          ref: ${{ matrix.base_sha }}
+          path: base
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: ${{ matrix.head_repository }}
+          ref: ${{ matrix.head_sha }}
+          path: head
+          persist-credentials: false
+      - name: Run sealed job
+        id: execute
+        continue-on-error: true
+        env:
+          GITHUB_REPOSITORY: ${{ matrix.repository }}
+        run: |
+          started_ms="$(python -c 'import time; print(int(time.time() * 1000))')"
+          echo "started_ms=$started_ms" >> "$GITHUB_OUTPUT"
+          /usr/local/libexec/marvis-ci/RUN_JOB.sh \
+            "$GITHUB_WORKSPACE/job.json" \
+            "$GITHUB_WORKSPACE/raw-result.json" \
+            -- /usr/bin/python3 -m ci.work_executor \
+            --job "$GITHUB_WORKSPACE/job.json" \
+            --control "$GITHUB_WORKSPACE/control" \
+            --base "$GITHUB_WORKSPACE/base" \
+            --head "$GITHUB_WORKSPACE/head"
+      - name: Sanitize runner result
+        if: always()
+        env:
+          JOB_ID: ${{ matrix.job_id }}
+          STARTED_MS: ${{ steps.execute.outputs.started_ms }}
+        run: |
+          chip="$(sysctl -n machdep.cpu.brand_string 2>/dev/null || printf 'Apple silicon')"
+          memory_gib="$(($(sysctl -n hw.memsize) / 1024 / 1024 / 1024))"
+          python -m runners.actions normalize \
+            --jobs job.json \
+            --raw raw-result.json \
+            --chip "$chip" \
+            --memory-gib "$memory_gib" \
+            --started-ms "${STARTED_MS:-0}" \
+            --engines engines \
+            --output "${JOB_ID}.json"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: always()
+        with:
+          name: ci-result-${{ matrix.job_id }}
+          path: ${{ matrix.job_id }}.json
+          if-no-files-found: error
+          retention-days: 7
+
+  collect:
+    needs: [prepare, execute]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ci-attempt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: request
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        if: needs.prepare.outputs.has_jobs == 'true'
+        continue-on-error: true
+        with:
+          pattern: ci-result-*
+          path: results
+          merge-multiple: true
+      - name: Validate and collect results
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: >-
+          python -m runners.actions collect
+          --attempt request/attempt.json
+          --jobs request/jobs.json
+          --results results
+          --run-url "$RUN_URL"
+          --engines engines
+          --output bundle.json
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: ci-results-${{ github.run_id }}-${{ github.run_attempt }}
+          path: bundle.json
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app
+        with:
+          client-id: ${{ vars.MLX_CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.MLX_CI_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: mlx-vlm,mlx-audio
+          permission-contents: write
+      - name: Notify participant repository
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPOSITORY: ${{ needs.prepare.outputs.repository }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          jq -n \
+            --argjson run_id "$RUN_ID" \
+            --argjson run_attempt "$RUN_ATTEMPT" \
+            '{event_type:"ci-run-result",client_payload:{schema_version:1,run_id:$run_id,run_attempt:$run_attempt}}' \
+            > "$RUNNER_TEMP/result.json"
+          gh api "repos/$REPOSITORY/dispatches" \
+            --method POST --input "$RUNNER_TEMP/result.json"

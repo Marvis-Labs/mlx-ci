@@ -439,9 +439,14 @@ def validate_result(value: Any, job: dict[str, Any]) -> dict[str, Any]:
         raise ContractError("result does not match job")
     if not isinstance(result["status"], str) or result["status"] not in STATUSES:
         raise ContractError("result status is invalid")
-    device = _fields(result["device"], {"chip", "memory_gib"}, "device")
-    _text(device["chip"], "device chip", 64)
-    _int(device["memory_gib"], "device memory_gib", 512)
+    device = result["device"]
+    if device is None:
+        if result["status"] != "infrastructure_failure":
+            raise ContractError("only infrastructure failures may omit the device")
+    else:
+        device = _fields(device, {"chip", "memory_gib"}, "device")
+        _text(device["chip"], "device chip", 64)
+        _int(device["memory_gib"], "device memory_gib", 512)
     if result["cache"] not in CACHE_RESULTS:
         raise ContractError("result cache is invalid")
     _nonnegative_int(result["duration_ms"], "duration_ms", 7 * 24 * 60 * 60 * 1000)

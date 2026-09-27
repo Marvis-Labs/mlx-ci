@@ -4,7 +4,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from runners.actions import admission_command, choose_runner, memory_label
+from runners.actions import (
+    admission_command,
+    choose_runner,
+    collect_results,
+    matrix,
+    memory_label,
+    normalize_result,
+)
 from runners.contract import (
     ContractError,
     read_json,
@@ -285,6 +292,58 @@ class ContractTests(unittest.TestCase):
         for field in ("runner", "runner_id", "runner_name", "hostname"):
             with self.subTest(field=field), self.assertRaises(ContractError):
                 validate_result({**result, field: "private"}, job)
+
+    def test_dispatch_matrix_uses_smallest_memory_label(self):
+        job = self.job()
+        value = matrix(
+            {"schema_version": 1, "jobs": [job], "blocked": []}, REPOSITORIES
+        )
+        entry = value["include"][0]
+        self.assertEqual(entry["job_id"], job["id"])
+        self.assertEqual(entry["memory_label"], "memory-128gb")
+
+    def test_runner_result_is_sanitized_before_collection(self):
+        job = self.job()
+        raw = {
+            "job_id": job["id"],
+            "outcome": "passed",
+            "reason": None,
+            "device": "private-hostname",
+            "cache": {"before": "complete", "after": "complete", "reused": True},
+            "findings": {"metrics": []},
+        }
+        result = normalize_result(job, raw, "Apple M4 Max", 128, 2500)
+        self.assertEqual(result["device"], {"chip": "Apple M4 Max", "memory_gib": 128})
+        self.assertNotIn("private-hostname", json.dumps(result))
+        self.assertEqual(result["cache"], "hit")
+
+    def test_collection_represents_missing_runner_without_inventing_device(self):
+        job = self.job()
+        attempt = {
+            "schema_version": 2,
+            "engine": "vlm",
+            "repository": REPOSITORIES["vlm"],
+            "pull_request": 42,
+            "comment_id": 123,
+            "base_sha": "a" * 40,
+            "head_sha": "b" * 40,
+            "head_repository": "contributor/mlx-vlm",
+            "contract_sha": "a" * 40,
+            "run_id": 17,
+            "run_attempt": 1,
+            "changed_files": ["mlx_vlm/models/qwen2_vl/vision.py"],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            bundle = collect_results(
+                attempt,
+                {"schema_version": 1, "jobs": [job], "blocked": []},
+                Path(directory),
+                "https://github.com/Marvis-Labs/mlx-ci/actions/runs/17",
+                REPOSITORIES,
+            )
+        result = bundle["results"][0]
+        self.assertEqual(result["status"], "infrastructure_failure")
+        self.assertIsNone(result["device"])
 
     def test_correctness_failure_allows_only_advisory_metrics(self):
         job = self.job()
