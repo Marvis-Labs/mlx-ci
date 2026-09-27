@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -13,6 +14,9 @@ REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*\
 MAX_BYTES = 65_536
 MAX_WORK = 64
 STATUSES = frozenset({"passed", "failed", "skipped", "infrastructure_failure"})
+CATEGORIES = frozenset({"correctness", "performance", "infrastructure"})
+CACHE_RESULTS = frozenset({"hit", "downloaded", "not_applicable"})
+METRIC_VERDICTS = frozenset({"improved", "stable", "regressed", "advisory"})
 JOB_FIELDS = {
     "schema_version",
     "engine",
@@ -106,6 +110,28 @@ def _nonnegative_int(value: Any, label: str, maximum: int) -> int:
         isinstance(value, bool)
         or not isinstance(value, int)
         or not 0 <= value <= maximum
+    ):
+        raise ContractError(f"{label} is invalid")
+    return value
+
+
+def _text(value: Any, label: str, maximum: int = 160) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > maximum
+        or any(character in value for character in "\0\r\n")
+    ):
+        raise ContractError(f"{label} is invalid")
+    return value
+
+
+def _number(value: Any, label: str) -> int | float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or abs(value) > 10**15
     ):
         raise ContractError(f"{label} is invalid")
     return value
@@ -391,10 +417,20 @@ def seal_plan(
 def validate_result(value: Any, job: dict[str, Any]) -> dict[str, Any]:
     result = _fields(
         value,
-        {"schema_version", "job_id", "manifest_digest", "status", "checks"},
+        {
+            "schema_version",
+            "job_id",
+            "manifest_digest",
+            "status",
+            "device",
+            "cache",
+            "duration_ms",
+            "checks",
+            "metrics",
+        },
         "result",
     )
-    if type(result["schema_version"]) is not int or result["schema_version"] != 1:
+    if type(result["schema_version"]) is not int or result["schema_version"] != 2:
         raise ContractError("unsupported result version")
     if (
         result["job_id"] != job["id"]
@@ -403,14 +439,46 @@ def validate_result(value: Any, job: dict[str, Any]) -> dict[str, Any]:
         raise ContractError("result does not match job")
     if not isinstance(result["status"], str) or result["status"] not in STATUSES:
         raise ContractError("result status is invalid")
+    device = _fields(result["device"], {"chip", "memory_gib"}, "device")
+    _text(device["chip"], "device chip", 64)
+    _int(device["memory_gib"], "device memory_gib", 512)
+    if result["cache"] not in CACHE_RESULTS:
+        raise ContractError("result cache is invalid")
+    _nonnegative_int(result["duration_ms"], "duration_ms", 7 * 24 * 60 * 60 * 1000)
     checks = result["checks"]
-    if not isinstance(checks, list) or len(checks) > MAX_WORK:
+    if not isinstance(checks, list) or not 1 <= len(checks) <= MAX_WORK:
         raise ContractError("result checks are invalid")
     for check in checks:
-        _fields(check, {"name", "status"}, "check")
-        _name(check["name"], "check name")
+        _fields(check, {"name", "category", "status", "detail"}, "check")
+        _text(check["name"], "check name", 80)
+        if check["category"] not in CATEGORIES:
+            raise ContractError("check category is invalid")
         if not isinstance(check["status"], str) or check["status"] not in STATUSES:
             raise ContractError("check status is invalid")
+        _text(check["detail"], "check detail")
+    metrics = result["metrics"]
+    if not isinstance(metrics, list) or len(metrics) > MAX_WORK:
+        raise ContractError("result metrics are invalid")
+    for metric in metrics:
+        _fields(
+            metric,
+            {"name", "unit", "base", "head", "change_pct", "verdict"},
+            "metric",
+        )
+        _text(metric["name"], "metric name", 80)
+        _text(metric["unit"], "metric unit", 16)
+        for field in ("base", "head", "change_pct"):
+            _number(metric[field], f"metric {field}")
+        if metric["verdict"] not in METRIC_VERDICTS:
+            raise ContractError("metric verdict is invalid")
+    correctness_failed = any(
+        check["category"] == "correctness" and check["status"] == "failed"
+        for check in checks
+    )
+    if correctness_failed and any(
+        metric["verdict"] != "advisory" for metric in metrics
+    ):
+        raise ContractError("metrics must be advisory after correctness failure")
     if result["status"] == "passed" and (
         not checks or any(check["status"] != "passed" for check in checks)
     ):

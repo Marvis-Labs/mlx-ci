@@ -214,11 +214,31 @@ class ContractTests(unittest.TestCase):
     def test_result_is_bound_to_job(self):
         job = self.job()
         result = {
-            "schema_version": 1,
+            "schema_version": 2,
             "job_id": job["id"],
             "manifest_digest": job["manifest_digest"],
             "status": "passed",
-            "checks": [{"name": "synthetic", "status": "passed"}],
+            "device": {"chip": "Apple M4", "memory_gib": 16},
+            "cache": "hit",
+            "duration_ms": 1250,
+            "checks": [
+                {
+                    "name": "Synthetic",
+                    "category": "correctness",
+                    "status": "passed",
+                    "detail": "Outputs match",
+                }
+            ],
+            "metrics": [
+                {
+                    "name": "TTFT",
+                    "unit": "ms",
+                    "base": 100,
+                    "head": 104,
+                    "change_pct": 4.0,
+                    "verdict": "regressed",
+                }
+            ],
         }
         self.assertEqual(validate_result(result, job), result)
         with self.assertRaises(ContractError):
@@ -227,8 +247,78 @@ class ContractTests(unittest.TestCase):
             validate_result({**result, "command": "sh"}, job)
         with self.assertRaises(ContractError):
             validate_result(
-                {**result, "checks": [{"name": "synthetic", "status": "failed"}]}, job
+                {
+                    **result,
+                    "checks": [
+                        {
+                            "name": "Synthetic",
+                            "category": "correctness",
+                            "status": "failed",
+                            "detail": "Outputs differ",
+                        }
+                    ],
+                },
+                job,
             )
+
+    def test_public_result_rejects_runner_identity(self):
+        job = self.job()
+        result = {
+            "schema_version": 2,
+            "job_id": job["id"],
+            "manifest_digest": job["manifest_digest"],
+            "status": "passed",
+            "device": {"chip": "Apple M4 Max", "memory_gib": 128},
+            "cache": "downloaded",
+            "duration_ms": 2500,
+            "checks": [
+                {
+                    "name": "Checkpoint",
+                    "category": "correctness",
+                    "status": "passed",
+                    "detail": "Outputs match",
+                }
+            ],
+            "metrics": [],
+        }
+        self.assertEqual(validate_result(result, job), result)
+        for field in ("runner", "runner_id", "runner_name", "hostname"):
+            with self.subTest(field=field), self.assertRaises(ContractError):
+                validate_result({**result, field: "private"}, job)
+
+    def test_correctness_failure_allows_only_advisory_metrics(self):
+        job = self.job()
+        result = {
+            "schema_version": 2,
+            "job_id": job["id"],
+            "manifest_digest": job["manifest_digest"],
+            "status": "failed",
+            "device": {"chip": "Apple M4", "memory_gib": 16},
+            "cache": "hit",
+            "duration_ms": 1250,
+            "checks": [
+                {
+                    "name": "Output",
+                    "category": "correctness",
+                    "status": "failed",
+                    "detail": "Outputs differ",
+                }
+            ],
+            "metrics": [
+                {
+                    "name": "TTFT",
+                    "unit": "ms",
+                    "base": 100,
+                    "head": 90,
+                    "change_pct": -10,
+                    "verdict": "advisory",
+                }
+            ],
+        }
+        self.assertEqual(validate_result(result, job), result)
+        result["metrics"][0]["verdict"] = "improved"
+        with self.assertRaisesRegex(ContractError, "advisory"):
+            validate_result(result, job)
 
     def test_reader_rejects_duplicate_keys(self):
         with tempfile.TemporaryDirectory() as directory:
