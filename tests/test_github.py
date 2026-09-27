@@ -7,7 +7,6 @@ from runners.engines import load_engines
 from runners.github import resolve_request
 from runners.prepare import prepare
 
-
 ENGINES = load_engines(Path(__file__).resolve().parents[1] / "engines")
 
 
@@ -43,15 +42,36 @@ class GitHubTests(unittest.TestCase):
             },
             f"repos/{repository}/branches/main": {"commit": {"sha": "a" * 40}},
         }
+        self.files = [
+            {"filename": "mlx_vlm/models/qwen2_vl/vision.py", "status": "modified"},
+            {
+                "filename": "mlx_vlm/models/florence2/model.py",
+                "previous_filename": "mlx_vlm/models/florence2/florence2.py",
+                "status": "renamed",
+            },
+        ]
 
     def resolve(self):
-        return resolve_request(self.request, ENGINES, self.responses.__getitem__)
+        return resolve_request(
+            self.request,
+            ENGINES,
+            self.responses.__getitem__,
+            lambda _: self.files,
+        )
 
     def test_resolves_main_and_pr_head_from_github(self):
         attempt = self.resolve()
         self.assertEqual(attempt["base_sha"], "a" * 40)
         self.assertEqual(attempt["head_sha"], "b" * 40)
         self.assertEqual(attempt["contract_sha"], "a" * 40)
+        self.assertEqual(
+            attempt["changed_files"],
+            [
+                "mlx_vlm/models/florence2/florence2.py",
+                "mlx_vlm/models/florence2/model.py",
+                "mlx_vlm/models/qwen2_vl/vision.py",
+            ],
+        )
 
     def test_non_maintainer_is_rejected(self):
         self.responses["repos/Marvis-Labs/mlx-vlm/issues/comments/123"]["user"][
@@ -80,9 +100,12 @@ class GitHubTests(unittest.TestCase):
     def test_prepare_accepts_only_the_registered_dispatch(self):
         event = {"action": "ci-run-request", "client_payload": self.request}
         directory = Path(__file__).resolve().parents[1] / "engines"
-        with patch(
-            "runners.prepare.github_get",
-            side_effect=lambda path, _: self.responses[path],
+        with (
+            patch(
+                "runners.prepare.github_get",
+                side_effect=lambda path, _: self.responses[path],
+            ),
+            patch("runners.prepare.github_files", return_value=self.files),
         ):
             attempt = prepare(event, directory, "token", 17, 2)
             self.assertEqual(attempt["head_sha"], "b" * 40)
@@ -94,9 +117,12 @@ class GitHubTests(unittest.TestCase):
     def test_prepare_rejects_invalid_run_identity(self):
         event = {"action": "ci-run-request", "client_payload": self.request}
         directory = Path(__file__).resolve().parents[1] / "engines"
-        with patch(
-            "runners.prepare.github_get",
-            side_effect=lambda path, _: self.responses[path],
+        with (
+            patch(
+                "runners.prepare.github_get",
+                side_effect=lambda path, _: self.responses[path],
+            ),
+            patch("runners.prepare.github_files", return_value=self.files),
         ):
             with self.assertRaises(ContractError):
                 prepare(event, directory, "token", 0, 1)

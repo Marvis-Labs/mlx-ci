@@ -4,15 +4,42 @@ import hashlib
 import json
 import re
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any
-
 
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}\Z")
 REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 MAX_BYTES = 65_536
-MAX_WORK = 16
+MAX_WORK = 64
 STATUSES = frozenset({"passed", "failed", "skipped", "infrastructure_failure"})
+JOB_FIELDS = {
+    "schema_version",
+    "engine",
+    "repository",
+    "pull_request",
+    "base_sha",
+    "head_sha",
+    "head_repository",
+    "contract_sha",
+    "id",
+    "component",
+    "subject",
+    "phases",
+    "work",
+    "resources",
+    "artifact",
+    "estimated_peak_bytes",
+    "required_memory_gib",
+    "required_disk_gib",
+    "manifest_digest",
+}
+UNSEALED_JOB_FIELDS = JOB_FIELDS - {
+    "estimated_peak_bytes",
+    "required_memory_gib",
+    "required_disk_gib",
+    "manifest_digest",
+}
 
 
 class ContractError(ValueError):
@@ -74,6 +101,97 @@ def _int(value: Any, label: str, maximum: int) -> int:
     return value
 
 
+def _nonnegative_int(value: Any, label: str, maximum: int) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 0 <= value <= maximum
+    ):
+        raise ContractError(f"{label} is invalid")
+    return value
+
+
+def _path(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= 512
+        or "\0" in value
+        or PurePosixPath(value).is_absolute()
+        or any(part in {"", ".", ".."} for part in PurePosixPath(value).parts)
+    ):
+        raise ContractError("changed file is invalid")
+    return value
+
+
+def _phases(value: Any) -> list[str]:
+    if (
+        not isinstance(value, list)
+        or not 1 <= len(value) <= 8
+        or any(_name(phase, "phase") != phase for phase in value)
+        or len(set(value)) != len(value)
+    ):
+        raise ContractError("job phases are invalid")
+    return value
+
+
+def _work(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or not value:
+        raise ContractError("job work is invalid")
+    try:
+        encoded = json.dumps(
+            value, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode()
+    except (TypeError, ValueError) as error:
+        raise ContractError("job work is invalid") from error
+    if len(encoded) > 32_768:
+        raise ContractError("job work is too large")
+    return value
+
+
+def _resources(value: Any) -> dict[str, int]:
+    resources = _fields(
+        value,
+        {
+            "resident_bytes",
+            "fixed_bytes",
+            "bytes_per_unit",
+            "units",
+            "batch_size",
+            "workspace_bytes",
+        },
+        "resources",
+    )
+    _int(resources["resident_bytes"], "resident_bytes", 4 * (1 << 40))
+    _nonnegative_int(resources["fixed_bytes"], "fixed_bytes", 1 << 40)
+    _nonnegative_int(resources["bytes_per_unit"], "bytes_per_unit", 1 << 30)
+    _nonnegative_int(resources["units"], "units", 10_000_000)
+    _int(resources["batch_size"], "batch_size", 1_024)
+    _nonnegative_int(resources["workspace_bytes"], "workspace_bytes", 1 << 40)
+    return resources
+
+
+def _artifact(value: Any, resident_bytes: int) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    artifact = _fields(
+        value,
+        {"kind", "repository", "revision", "tensor_bytes"},
+        "artifact",
+    )
+    if artifact["kind"] != "huggingface":
+        raise ContractError("artifact kind is invalid")
+    if (
+        not isinstance(artifact["repository"], str)
+        or REPOSITORY.fullmatch(artifact["repository"]) is None
+    ):
+        raise ContractError("artifact repository is invalid")
+    _sha(artifact["revision"], "artifact revision")
+    _int(artifact["tensor_bytes"], "artifact tensor_bytes", 4 * (1 << 40))
+    if artifact["tensor_bytes"] != resident_bytes:
+        raise ContractError("artifact and resident sizes differ")
+    return artifact
+
+
 def validate_request(value: Any, repositories: dict[str, str]) -> dict[str, Any]:
     request = _fields(
         value,
@@ -108,22 +226,22 @@ def validate_attempt(value: Any, repositories: dict[str, str]) -> dict[str, Any]
             "contract_sha",
             "run_id",
             "run_attempt",
+            "changed_files",
         },
         "attempt",
     )
     validate_request(
         {
-            key: attempt[key]
-            for key in (
-                "schema_version",
-                "engine",
-                "repository",
-                "pull_request",
-                "comment_id",
-            )
+            "schema_version": 1,
+            "engine": attempt["engine"],
+            "repository": attempt["repository"],
+            "pull_request": attempt["pull_request"],
+            "comment_id": attempt["comment_id"],
         },
         repositories,
     )
+    if type(attempt["schema_version"]) is not int or attempt["schema_version"] != 2:
+        raise ContractError("unsupported attempt version")
     for field in ("base_sha", "head_sha", "contract_sha"):
         _sha(attempt[field], field)
     if (
@@ -139,31 +257,23 @@ def validate_attempt(value: Any, repositories: dict[str, str]) -> dict[str, Any]
         raise ContractError("head repository is invalid")
     _int(attempt["run_id"], "run_id", 10**18)
     _int(attempt["run_attempt"], "run_attempt", 1_000)
+    changed_files = attempt["changed_files"]
+    if (
+        not isinstance(changed_files, list)
+        or not 1 <= len(changed_files) <= 3_000
+        or len(set(changed_files)) != len(changed_files)
+    ):
+        raise ContractError("changed files are invalid")
+    for changed_file in changed_files:
+        _path(changed_file)
     return attempt
 
 
 def validate_job(value: Any, repositories: dict[str, str]) -> dict[str, Any]:
-    job = _fields(
-        value,
-        {
-            "schema_version",
-            "engine",
-            "repository",
-            "pull_request",
-            "base_sha",
-            "head_sha",
-            "head_repository",
-            "contract_sha",
-            "id",
-            "component",
-            "subject",
-            "required_memory_gib",
-            "required_disk_gib",
-            "manifest_digest",
-        },
-        "job",
-    )
-    if type(job["schema_version"]) is not int or job["schema_version"] != 1:
+    from runners.resources import ResourceError, calculate_requirements
+
+    job = _fields(value, JOB_FIELDS, "job")
+    if type(job["schema_version"]) is not int or job["schema_version"] != 2:
         raise ContractError("unsupported job version")
     if repositories.get(_name(job["engine"], "engine")) != job["repository"]:
         raise ContractError("engine and repository do not match")
@@ -179,8 +289,23 @@ def validate_job(value: Any, repositories: dict[str, str]) -> dict[str, Any]:
         raise ContractError("head repository is invalid")
     for field in ("id", "component", "subject"):
         _name(job[field], field)
+    _phases(job["phases"])
+    _work(job["work"])
+    resources = _resources(job["resources"])
+    artifact = _artifact(job["artifact"], resources["resident_bytes"])
+    try:
+        peak, memory, disk = calculate_requirements(resources, artifact)
+    except ResourceError as error:
+        raise ContractError(str(error)) from error
+    _int(job["estimated_peak_bytes"], "estimated_peak_bytes", 8 * (1 << 40))
     _int(job["required_memory_gib"], "required_memory_gib", 512)
-    _int(job["required_disk_gib"], "required_disk_gib", 1_024)
+    _int(job["required_disk_gib"], "required_disk_gib", 8_192)
+    if (
+        job["estimated_peak_bytes"] != peak
+        or job["required_memory_gib"] != memory
+        or job["required_disk_gib"] != disk
+    ):
+        raise ContractError("job resource requirements do not match")
     digest = _sha256(
         {key: item for key, item in job.items() if key != "manifest_digest"}
     )
@@ -190,8 +315,77 @@ def validate_job(value: Any, repositories: dict[str, str]) -> dict[str, Any]:
 
 
 def seal_job(value: dict[str, Any], repositories: dict[str, str]) -> dict[str, Any]:
-    job = {**value, "manifest_digest": _sha256(value)}
+    from runners.resources import ResourceError, calculate_requirements
+
+    plan = _fields(value, UNSEALED_JOB_FIELDS, "unsealed job")
+    _phases(plan["phases"])
+    _work(plan["work"])
+    resources = _resources(plan["resources"])
+    artifact = _artifact(plan["artifact"], resources["resident_bytes"])
+    try:
+        peak, memory, disk = calculate_requirements(resources, artifact)
+    except ResourceError as error:
+        raise ContractError(str(error)) from error
+    derived = {
+        **plan,
+        "estimated_peak_bytes": peak,
+        "required_memory_gib": memory,
+        "required_disk_gib": disk,
+    }
+    job = {**derived, "manifest_digest": _sha256(derived)}
     return validate_job(job, repositories)
+
+
+def seal_plan(
+    attempt: dict[str, Any], plan: Any, repositories: dict[str, str]
+) -> dict[str, Any]:
+    validate_attempt(attempt, repositories)
+    plan = _fields(plan, {"schema_version", "jobs", "blocked"}, "plan")
+    if type(plan["schema_version"]) is not int or plan["schema_version"] != 1:
+        raise ContractError("unsupported plan version")
+    templates = plan["jobs"]
+    if not isinstance(templates, list) or len(templates) > MAX_WORK:
+        raise ContractError("plan jobs are invalid")
+    identity = {
+        key: attempt[key]
+        for key in (
+            "engine",
+            "repository",
+            "pull_request",
+            "base_sha",
+            "head_sha",
+            "head_repository",
+            "contract_sha",
+        )
+    }
+    jobs = []
+    for template in templates:
+        template = _fields(
+            template,
+            {
+                "id",
+                "component",
+                "subject",
+                "phases",
+                "work",
+                "resources",
+                "artifact",
+            },
+            "job template",
+        )
+        jobs.append(
+            seal_job({"schema_version": 2, **identity, **template}, repositories)
+        )
+    if len({job["id"] for job in jobs}) != len(jobs):
+        raise ContractError("plan job identifiers are duplicated")
+    blocked = plan["blocked"]
+    if not isinstance(blocked, list) or len(blocked) > MAX_WORK:
+        raise ContractError("blocked work is invalid")
+    for item in blocked:
+        _fields(item, {"component", "subject", "reason"}, "blocked work")
+        for field in ("component", "subject", "reason"):
+            _name(item[field], f"blocked {field}")
+    return {"schema_version": 1, "jobs": jobs, "blocked": blocked}
 
 
 def validate_result(value: Any, job: dict[str, Any]) -> dict[str, Any]:

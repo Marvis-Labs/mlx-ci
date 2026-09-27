@@ -13,7 +13,7 @@ from runners.engines import load_engines
 from runners.github import resolve_request
 
 
-def github_get(path: str, token: str) -> dict:
+def github_get(path: str, token: str) -> dict | list:
     request = urllib.request.Request(
         f"https://api.github.com/{path}",
         headers={
@@ -34,9 +34,21 @@ def github_get(path: str, token: str) -> dict:
         value = json.loads(content)
     except (UnicodeError, json.JSONDecodeError) as error:
         raise ContractError("GitHub response is invalid") from error
-    if not isinstance(value, dict):
+    if not isinstance(value, (dict, list)):
         raise ContractError("GitHub response is invalid")
     return value
+
+
+def github_files(path: str, token: str) -> list[dict]:
+    files = []
+    for page in range(1, 31):
+        value = github_get(f"{path}?per_page=100&page={page}", token)
+        if not isinstance(value, list):
+            raise ContractError("GitHub file response is invalid")
+        files.extend(value)
+        if len(value) < 100:
+            return files
+    raise ContractError("pull request changes too many files")
 
 
 def prepare(
@@ -48,8 +60,13 @@ def prepare(
     if not isinstance(payload, dict):
         raise ContractError("request payload is invalid")
     engines = load_engines(engines_directory)
-    attempt = resolve_request(payload, engines, lambda path: github_get(path, token))
-    attempt.update(schema_version=1, run_id=run_id, run_attempt=run_attempt)
+    attempt = resolve_request(
+        payload,
+        engines,
+        lambda path: github_get(path, token),
+        lambda path: github_files(path, token),
+    )
+    attempt.update(schema_version=2, run_id=run_id, run_attempt=run_attempt)
     repositories = {name: engine["repository"] for name, engine in engines.items()}
     return validate_attempt(attempt, repositories)
 
@@ -59,6 +76,7 @@ def main() -> int:
     parser.add_argument("--event", required=True, type=Path)
     parser.add_argument("--engines", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--github-output", type=Path)
     arguments = parser.parse_args()
     token = os.environ.get("GH_TOKEN", "")
     if len(token) < 20 or "\n" in token:
@@ -78,6 +96,10 @@ def main() -> int:
         stream.write("\n")
         temporary = Path(stream.name)
     os.replace(temporary, arguments.output)
+    if arguments.github_output is not None:
+        with arguments.github_output.open("a", encoding="utf-8") as stream:
+            for field in ("engine", "repository", "contract_sha"):
+                stream.write(f"{field}={attempt[field]}\n")
     return 0
 
 

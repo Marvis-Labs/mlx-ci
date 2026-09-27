@@ -31,12 +31,40 @@ jobs:
           permission-issues: read
           permission-pull-requests: read
       - name: Validate request and pin revisions
+        id: prepare
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
-        run: python -m runners.prepare --event "$GITHUB_EVENT_PATH" --engines engines --output attempt.json
+        run: >-
+          python -m runners.prepare
+          --event "$GITHUB_EVENT_PATH"
+          --engines engines
+          --output attempt.json
+          --github-output "$GITHUB_OUTPUT"
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: ${{ steps.prepare.outputs.repository }}
+          ref: ${{ steps.prepare.outputs.contract_sha }}
+          path: participant
+          token: ${{ steps.app.outputs.token }}
+          persist-credentials: false
+      - name: Plan repository work
+        run: >-
+          python participant/ci/plan.py
+          --attempt attempt.json
+          --output plan.json
+      - name: Seal jobs
+        run: >-
+          python -m runners.actions seal
+          --attempt attempt.json
+          --plan plan.json
+          --engines engines
+          --output jobs.json
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: ci-attempt-${{ github.run_id }}-${{ github.run_attempt }}
-          path: attempt.json
+          path: |
+            attempt.json
+            plan.json
+            jobs.json
           if-no-files-found: error
           retention-days: 7
