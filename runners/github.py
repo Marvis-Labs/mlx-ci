@@ -52,18 +52,19 @@ def resolve_request(
     main = _object(get(f"repos/{repository}/branches/main"), "main branch")
     main_commit = _object(main.get("commit"), "main commit")
     base_sha = _sha(main_commit.get("sha"), "main sha")
+    pr_base_sha = _sha(base.get("sha"), "PR base sha")
     head_sha = _sha(head.get("sha"), "head sha")
     if (
         pull.get("state") != "open"
         or pull.get("number") != number
         or base.get("ref") != "main"
         or base_repo.get("full_name") != repository
-        or _sha(base.get("sha"), "PR base sha") != base_sha
+        or pr_base_sha == head_sha
         or not isinstance(head_repo.get("full_name"), str)
         or REPOSITORY.fullmatch(head_repo["full_name"]) is None
         or base_sha == head_sha
     ):
-        raise ContractError("pull request is not based on current main")
+        raise ContractError("pull request is not eligible for CI")
     changed_files = []
     for item in get_files(f"repos/{repository}/pulls/{number}/files"):
         if not isinstance(item, dict) or not isinstance(item.get("filename"), str):

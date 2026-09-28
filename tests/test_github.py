@@ -80,10 +80,16 @@ class GitHubTests(unittest.TestCase):
         with self.assertRaises(ContractError):
             self.resolve()
 
-    def test_main_must_match_pr_base(self):
+    def test_current_main_is_pinned_when_pr_is_behind(self):
         self.responses["repos/Marvis-Labs/mlx-vlm/branches/main"]["commit"]["sha"] = (
             "c" * 40
         )
+        attempt = self.resolve()
+        self.assertEqual(attempt["base_sha"], "c" * 40)
+        self.assertEqual(attempt["contract_sha"], "c" * 40)
+
+    def test_pull_request_must_target_main(self):
+        self.responses["repos/Marvis-Labs/mlx-vlm/pulls/42"]["base"]["ref"] = "dev"
         with self.assertRaises(ContractError):
             self.resolve()
 
