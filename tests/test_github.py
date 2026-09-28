@@ -5,7 +5,7 @@ from unittest.mock import patch
 from runners.contract import ContractError
 from runners.engines import load_engines
 from runners.github import resolve_request
-from runners.prepare import prepare
+from runners.prepare import coalesced_run, prepare
 
 ENGINES = load_engines(Path(__file__).resolve().parents[1] / "engines")
 
@@ -24,6 +24,7 @@ class GitHubTests(unittest.TestCase):
             f"repos/{repository}/issues/comments/123": {
                 "id": 123,
                 "body": "/ci run",
+                "created_at": "2026-09-28T18:24:42Z",
                 "issue_url": f"https://api.github.com/repos/{repository}/issues/42",
                 "user": {"login": "Lazarus-931"},
             },
@@ -64,6 +65,7 @@ class GitHubTests(unittest.TestCase):
         self.assertEqual(attempt["base_sha"], "a" * 40)
         self.assertEqual(attempt["head_sha"], "b" * 40)
         self.assertEqual(attempt["contract_sha"], "a" * 40)
+        self.assertEqual(attempt["requested_at"], "2026-09-28T18:24:42Z")
         self.assertEqual(
             attempt["changed_files"],
             [
@@ -132,3 +134,57 @@ class GitHubTests(unittest.TestCase):
         ):
             with self.assertRaises(ContractError):
                 prepare(event, directory, "token", 0, 1)
+
+    def test_same_revision_active_or_later_completed_run_is_coalesced(self):
+        attempt = {
+            **self.resolve(),
+            "schema_version": 2,
+            "run_id": 20,
+            "run_attempt": 1,
+        }
+        previous = {**attempt, "run_id": 17, "comment_id": 122}
+        active = {
+            "id": 17,
+            "status": "in_progress",
+            "updated_at": "2026-09-28T18:24:40Z",
+        }
+        completed_after_request = {
+            **active,
+            "status": "completed",
+            "conclusion": "success",
+            "updated_at": "2026-09-28T18:24:43Z",
+        }
+        completed_before_request = {
+            **active,
+            "status": "completed",
+            "updated_at": "2026-09-28T18:24:41Z",
+        }
+        self.assertEqual(coalesced_run(attempt, [(active, previous)]), 17)
+        self.assertEqual(
+            coalesced_run(
+                attempt,
+                [
+                    ({**active, "id": 19}, {**previous, "run_id": 19}),
+                    (active, previous),
+                ],
+            ),
+            17,
+        )
+        self.assertEqual(
+            coalesced_run(attempt, [(completed_after_request, previous)]), 17
+        )
+        self.assertIsNone(
+            coalesced_run(attempt, [(completed_before_request, previous)])
+        )
+        self.assertIsNone(
+            coalesced_run(
+                attempt,
+                [({**completed_after_request, "conclusion": "failure"}, previous)],
+            )
+        )
+        self.assertIsNone(
+            coalesced_run(
+                attempt,
+                [(active, {**previous, "head_sha": "c" * 40})],
+            )
+        )

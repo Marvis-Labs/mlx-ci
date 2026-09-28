@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import re
+from datetime import datetime
 from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Any
@@ -246,6 +247,7 @@ def validate_attempt(value: Any, repositories: dict[str, str]) -> dict[str, Any]
             "repository",
             "pull_request",
             "comment_id",
+            "requested_at",
             "base_sha",
             "head_sha",
             "head_repository",
@@ -283,6 +285,15 @@ def validate_attempt(value: Any, repositories: dict[str, str]) -> dict[str, Any]
         raise ContractError("head repository is invalid")
     _int(attempt["run_id"], "run_id", 10**18)
     _int(attempt["run_attempt"], "run_attempt", 1_000)
+    requested_value = attempt["requested_at"]
+    if not isinstance(requested_value, str) or len(requested_value) > 40:
+        raise ContractError("requested_at is invalid")
+    try:
+        requested_at = datetime.fromisoformat(requested_value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ContractError("requested_at is invalid") from error
+    if requested_at.tzinfo is None:
+        raise ContractError("requested_at is invalid")
     changed_files = attempt["changed_files"]
     if (
         not isinstance(changed_files, list)

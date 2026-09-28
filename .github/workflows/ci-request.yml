@@ -10,9 +10,14 @@ jobs:
   prepare:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    concurrency:
+      group: prepare-${{ github.event.client_payload.repository }}-${{ github.event.client_payload.pull_request }}
+      queue: max
     permissions:
+      actions: read
       contents: read
     outputs:
+      coalesced: ${{ steps.prepare.outputs.coalesced }}
       has_jobs: ${{ steps.matrix.outputs.has_jobs }}
       matrix: ${{ steps.matrix.outputs.matrix }}
       repository: ${{ steps.prepare.outputs.repository }}
@@ -37,6 +42,8 @@ jobs:
       - name: Validate request and pin revisions
         id: prepare
         env:
+          CI_ACTIONS_TOKEN: ${{ github.token }}
+          CI_ORCHESTRATOR_REPOSITORY: ${{ github.repository }}
           GH_TOKEN: ${{ steps.app.outputs.token }}
         run: >-
           python -m runners.prepare
@@ -45,6 +52,7 @@ jobs:
           --output attempt.json
           --github-output "$GITHUB_OUTPUT"
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        if: steps.prepare.outputs.coalesced != 'true'
         with:
           repository: ${{ steps.prepare.outputs.repository }}
           ref: ${{ steps.prepare.outputs.contract_sha }}
@@ -52,11 +60,13 @@ jobs:
           token: ${{ steps.app.outputs.token }}
           persist-credentials: false
       - name: Plan repository work
+        if: steps.prepare.outputs.coalesced != 'true'
         run: >-
           python participant/ci/plan.py
           --attempt attempt.json
           --output plan.json
       - name: Seal jobs
+        if: steps.prepare.outputs.coalesced != 'true'
         run: >-
           python -m runners.actions seal
           --attempt attempt.json
@@ -65,12 +75,14 @@ jobs:
           --output jobs.json
       - name: Build runner matrix
         id: matrix
+        if: steps.prepare.outputs.coalesced != 'true'
         run: >-
           python -m runners.actions matrix
           --jobs jobs.json
           --engines engines
           --github-output "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: steps.prepare.outputs.coalesced != 'true'
         with:
           name: ci-attempt-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -79,10 +91,35 @@ jobs:
             jobs.json
           if-no-files-found: error
           retention-days: 7
+      - name: Notify coalesced request
+        if: steps.prepare.outputs.coalesced == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: notify-token
+        with:
+          client-id: ${{ vars.MLX_CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.MLX_CI_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: mlx-vlm
+          permission-contents: write
+      - name: Notify participant repository
+        if: steps.prepare.outputs.coalesced == 'true'
+        env:
+          GH_TOKEN: ${{ steps.notify-token.outputs.token }}
+        run: |
+          jq -n \
+            --argjson pull_request "$(jq '.pull_request' attempt.json)" \
+            --argjson comment_id "$(jq '.comment_id' attempt.json)" \
+            --arg requested_at "$(jq -r '.requested_at' attempt.json)" \
+            --arg base_sha "$(jq -r '.base_sha' attempt.json)" \
+            --arg head_sha "$(jq -r '.head_sha' attempt.json)" \
+            '{event_type:"ci-run-coalesced",client_payload:{schema_version:1,pull_request:$pull_request,comment_id:$comment_id,requested_at:$requested_at,base_sha:$base_sha,head_sha:$head_sha}}' \
+            > "$RUNNER_TEMP/coalesced.json"
+          gh api "repos/${{ steps.prepare.outputs.repository }}/dispatches" \
+            --method POST --input "$RUNNER_TEMP/coalesced.json"
 
   execute:
     needs: prepare
-    if: needs.prepare.outputs.has_jobs == 'true'
+    if: needs.prepare.outputs.coalesced != 'true' && needs.prepare.outputs.has_jobs == 'true'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
@@ -168,7 +205,7 @@ jobs:
 
   collect:
     needs: [prepare, execute]
-    if: always() && needs.prepare.result == 'success'
+    if: always() && needs.prepare.result == 'success' && needs.prepare.outputs.coalesced != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

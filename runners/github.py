@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
 from runners.contract import ContractError, REPOSITORY, SHA, validate_request
@@ -33,6 +34,13 @@ def resolve_request(
         get(f"repos/{repository}/issues/comments/{comment_id}"), "comment"
     )
     user = _object(comment.get("user"), "comment user")
+    requested_at = comment.get("created_at")
+    try:
+        requested_time = datetime.fromisoformat(
+            str(requested_at).replace("Z", "+00:00")
+        )
+    except ValueError as error:
+        raise ContractError("comment timestamp is invalid") from error
     allowed = {name.lower() for name in engines[request["engine"]]["maintainers"]}
     if (
         comment.get("id") != comment_id
@@ -41,6 +49,7 @@ def resolve_request(
         != f"https://api.github.com/repos/{repository}/issues/{number}"
         or not isinstance(user.get("login"), str)
         or user["login"].lower() not in allowed
+        or requested_time.tzinfo is None
     ):
         raise ContractError("comment is not an authorized CI request")
 
@@ -80,6 +89,7 @@ def resolve_request(
         "repository": repository,
         "pull_request": number,
         "comment_id": comment_id,
+        "requested_at": requested_at,
         "base_sha": base_sha,
         "head_sha": head_sha,
         "head_repository": head_repo["full_name"],
