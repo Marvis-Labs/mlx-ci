@@ -17,6 +17,15 @@ from runners.contract import (
     validate_result,
 )
 from runners.engines import load_engines
+
+ERROR_DETAILS = {
+    "CalledProcessError": "Checkout or test command failed",
+    "ExecutionSecurityError": "Execution verification failed",
+    "RuntimeError": "Model probe failed",
+    "ValueError": "Test configuration failed validation",
+}
+
+
 def _write(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
@@ -26,12 +35,6 @@ def _write(path: Path, value: dict[str, Any]) -> None:
         stream.write("\n")
         temporary = Path(stream.name)
     os.replace(temporary, path)
-
-
-def _repositories(engines: Path) -> dict[str, str]:
-    return {
-        name: engine["repository"] for name, engine in load_engines(engines).items()
-    }
 
 
 def matrix(
@@ -68,6 +71,46 @@ def extract_job(
     return validate_job(matches[0], repositories)
 
 
+def _result(
+    job: dict[str, Any],
+    status: str,
+    device: dict[str, Any] | None,
+    duration_ms: int,
+    checks: list[dict[str, Any]],
+    metrics: list[dict[str, Any]],
+    cache: str = "not_applicable",
+) -> dict[str, Any]:
+    return validate_result(
+        {
+            "schema_version": 2,
+            "job_id": job["id"],
+            "manifest_digest": job["manifest_digest"],
+            "status": status,
+            "device": device,
+            "cache": cache,
+            "duration_ms": duration_ms,
+            "checks": checks,
+            "metrics": metrics,
+        },
+        job,
+    )
+
+
+def _infrastructure_failure(
+    job: dict[str, Any],
+    device: dict[str, Any] | None,
+    duration_ms: int,
+    detail: str,
+) -> dict[str, Any]:
+    check = {
+        "name": "Runner",
+        "category": "infrastructure",
+        "status": "infrastructure_failure",
+        "detail": detail,
+    }
+    return _result(job, "infrastructure_failure", device, duration_ms, [check], [])
+
+
 def normalize_result(
     job: dict[str, Any],
     raw: dict[str, Any] | None,
@@ -77,26 +120,8 @@ def normalize_result(
 ) -> dict[str, Any]:
     device = {"chip": chip, "memory_gib": memory_gib}
     if raw is None:
-        return validate_result(
-            {
-                "schema_version": 2,
-                "job_id": job["id"],
-                "manifest_digest": job["manifest_digest"],
-                "status": "infrastructure_failure",
-                "device": device,
-                "cache": "not_applicable",
-                "duration_ms": duration_ms,
-                "checks": [
-                    {
-                        "name": "Runner",
-                        "category": "infrastructure",
-                        "status": "infrastructure_failure",
-                        "detail": "Runner produced no result",
-                    }
-                ],
-                "metrics": [],
-            },
-            job,
+        return _infrastructure_failure(
+            job, device, duration_ms, "Runner produced no result"
         )
     if not isinstance(raw, dict) or raw.get("job_id") != job["id"]:
         raise ContractError("runner result does not match job")
@@ -107,33 +132,27 @@ def normalize_result(
         "passed" if passed else "infrastructure_failure" if infrastructure else "failed"
     )
     reason = raw.get("reason") or outcome or "unknown"
-    cache_value = raw.get("cache", {})
+    cache = "not_applicable"
+    cache_value = raw.get("cache")
     if isinstance(cache_value, dict):
         if cache_value.get("reused") is True:
             cache = "hit"
         elif cache_value.get("after") == "complete":
             cache = "downloaded"
-        else:
-            cache = "not_applicable"
-    else:
-        cache = "not_applicable"
     findings = raw.get("findings")
-    metrics = findings.get("metrics", []) if isinstance(findings, dict) else []
+    if not isinstance(findings, dict):
+        findings = {}
+    metrics = findings.get("metrics", [])
     if not isinstance(metrics, list):
         metrics = []
-    checks = findings.get("checks") if isinstance(findings, dict) else None
+    checks = findings.get("checks")
     if not isinstance(checks, list) or not checks or infrastructure:
-        error = findings.get("error") if isinstance(findings, dict) else None
+        detail = str(reason).replace("_", " ")[:160]
+        error = findings.get("error")
         if isinstance(error, str) and error:
-            error_type = error.partition(":")[0]
-            detail = {
-                "CalledProcessError": "Checkout or test command failed",
-                "ExecutionSecurityError": "Execution verification failed",
-                "RuntimeError": "Model probe failed",
-                "ValueError": "Test configuration failed validation",
-            }.get(error_type, "Executor failed before producing checks")
-        else:
-            detail = str(reason).replace("_", " ")[:160]
+            detail = ERROR_DETAILS.get(
+                error.partition(":")[0], "Executor failed before producing checks"
+            )
         checks = [
             {
                 "name": job["subject"],
@@ -142,21 +161,10 @@ def normalize_result(
                 "detail": detail,
             }
         ]
-    result = {
-        "schema_version": 2,
-        "job_id": job["id"],
-        "manifest_digest": job["manifest_digest"],
-        "status": status,
-        "device": device,
-        "cache": cache,
-        "duration_ms": duration_ms,
-        "checks": checks,
-        "metrics": metrics,
-    }
     if status == "failed":
-        for metric in result["metrics"]:
+        for metric in metrics:
             metric["verdict"] = "advisory"
-    return validate_result(result, job)
+    return _result(job, status, device, duration_ms, checks, metrics, cache)
 
 
 def collect_results(
@@ -174,26 +182,8 @@ def collect_results(
         if path.is_file():
             result = validate_result(read_json(path), job)
         else:
-            result = validate_result(
-                {
-                    "schema_version": 2,
-                    "job_id": job["id"],
-                    "manifest_digest": job["manifest_digest"],
-                    "status": "infrastructure_failure",
-                    "device": None,
-                    "cache": "not_applicable",
-                    "duration_ms": 0,
-                    "checks": [
-                        {
-                            "name": "Runner",
-                            "category": "infrastructure",
-                            "status": "infrastructure_failure",
-                            "detail": "No eligible runner reported a result",
-                        }
-                    ],
-                    "metrics": [],
-                },
-                job,
+            result = _infrastructure_failure(
+                job, None, 0, "No eligible runner reported a result"
             )
         results.append(result)
     return {
@@ -224,7 +214,10 @@ def main() -> int:
     parser.add_argument("--engines", required=True, type=Path)
     parser.add_argument("--output", type=Path)
     arguments = parser.parse_args()
-    repositories = _repositories(arguments.engines)
+    repositories = {
+        name: engine["repository"]
+        for name, engine in load_engines(arguments.engines).items()
+    }
     if arguments.command == "seal":
         value = seal_plan(
             read_json(arguments.attempt), read_json(arguments.plan), repositories
