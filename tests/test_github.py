@@ -109,10 +109,10 @@ class GitHubTests(unittest.TestCase):
         event = {"action": "ci-run-request", "client_payload": self.request}
         with (
             patch(
-                "runners.prepare.github_get",
+                "runners.prepare.github.get",
                 side_effect=lambda path, _: self.responses[path],
             ),
-            patch("runners.prepare.github_files", return_value=self.files),
+            patch("runners.prepare.github.files", return_value=self.files),
         ):
             attempt = prepare(event, ENGINES, "token", 17, 2)
             self.assertEqual(attempt["head_sha"], "b" * 40)
@@ -125,10 +125,10 @@ class GitHubTests(unittest.TestCase):
         event = {"action": "ci-run-request", "client_payload": self.request}
         with (
             patch(
-                "runners.prepare.github_get",
+                "runners.prepare.github.get",
                 side_effect=lambda path, _: self.responses[path],
             ),
-            patch("runners.prepare.github_files", return_value=self.files),
+            patch("runners.prepare.github.files", return_value=self.files),
         ):
             with self.assertRaises(ContractError):
                 prepare(event, ENGINES, "token", 0, 1)

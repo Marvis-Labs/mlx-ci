@@ -1,10 +1,71 @@
 from __future__ import annotations
 
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
 from runners.contract import ContractError, REPOSITORY, SHA, validate_request
+
+
+class _SafeRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, new_url):
+        redirected = super().redirect_request(request, fp, code, msg, headers, new_url)
+        if redirected and urllib.parse.urlparse(new_url).hostname != "api.github.com":
+            redirected.remove_header("Authorization")
+        return redirected
+
+
+def read(path: str, token: str, maximum: int = 1_000_000) -> bytes:
+    url = (
+        path
+        if path.startswith("https://api.github.com/")
+        else f"https://api.github.com/{path}"
+    )
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "marvis-mlx-ci",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urllib.request.build_opener(_SafeRedirect).open(
+            request, timeout=20
+        ) as response:
+            content = response.read(maximum + 1)
+    except (OSError, urllib.error.HTTPError) as error:
+        raise ContractError("GitHub request failed") from error
+    if len(content) > maximum:
+        raise ContractError("GitHub response is too large")
+    return content
+
+
+def get(path: str, token: str) -> dict | list:
+    try:
+        value = json.loads(read(path, token))
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise ContractError("GitHub response is invalid") from error
+    if not isinstance(value, (dict, list)):
+        raise ContractError("GitHub response is invalid")
+    return value
+
+
+def files(path: str, token: str) -> list[dict]:
+    changed = []
+    for page in range(1, 31):
+        value = get(f"{path}?per_page=100&page={page}", token)
+        if not isinstance(value, list):
+            raise ContractError("GitHub file response is invalid")
+        changed.extend(value)
+        if len(value) < 100:
+            return changed
+    raise ContractError("pull request changes too many files")
 
 
 def _object(value: Any, label: str) -> dict[str, Any]:
