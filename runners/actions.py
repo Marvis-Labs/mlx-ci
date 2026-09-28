@@ -17,10 +17,7 @@ from runners.contract import (
     validate_result,
 )
 from runners.engines import load_engines
-from runners.resources import MEMORY_TIERS_GIB, runner_decision, select_runner
-
-RUNNER_GROUP = "marvis-apple-silicon"
-BROKER = Path("/usr/local/libexec/marvis-ci/RUN_JOB.sh")
+from runners.resources import MEMORY_TIERS_GIB
 
 
 def memory_label(required_gib: int) -> str:
@@ -34,30 +31,6 @@ def memory_label(required_gib: int) -> str:
         if required_gib <= tier:
             return f"memory-{tier}gb"
     raise ContractError("no runner memory tier can fit this job")
-
-
-def admission_command(
-    job_path: Path,
-    result_path: Path,
-    repositories: dict[str, str],
-    runner: dict[str, Any],
-) -> list[str]:
-    job = validate_job(read_json(job_path), repositories)
-    if not job_path.is_absolute() or not result_path.is_absolute():
-        raise ContractError("runner paths must be absolute")
-    memory_label(job["required_memory_gib"])
-    decision = runner_decision(job, runner)
-    if not decision["eligible"]:
-        raise ContractError(f"runner refused job: {decision['reason']}")
-    return [str(BROKER), str(job_path), str(result_path)]
-
-
-def choose_runner(
-    job: dict[str, Any],
-    runners: list[dict[str, Any]],
-    repositories: dict[str, str],
-) -> dict[str, Any]:
-    return select_runner(validate_job(job, repositories), runners)
 
 
 def _write(path: Path, value: dict[str, Any]) -> None:

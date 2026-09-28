@@ -4,14 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from runners.actions import (
-    admission_command,
-    choose_runner,
-    collect_results,
-    matrix,
-    memory_label,
-    normalize_result,
-)
+from runners.actions import collect_results, matrix, memory_label, normalize_result
 from runners.contract import (
     ContractError,
     read_json,
@@ -27,6 +20,7 @@ from runners.resources import (
     ResourceError,
     huggingface_cache_state,
     runner_decision,
+    select_runner,
 )
 
 REPOSITORIES = {"vlm": "Marvis-Labs/mlx-vlm", "audio": "Marvis-Labs/mlx-audio"}
@@ -419,20 +413,8 @@ class ContractTests(unittest.TestCase):
             with self.assertRaises(ContractError):
                 read_json(path)
 
-    def test_smallest_runner_tier_and_fixed_broker(self):
+    def test_smallest_runner_tier(self):
         self.assertEqual(memory_label(17), "memory-32gb")
-        with tempfile.TemporaryDirectory() as directory:
-            job_path = Path(directory) / "job.json"
-            result_path = Path(directory) / "result.json"
-            job_path.write_text(json.dumps(self.job()))
-            self.assertEqual(
-                admission_command(job_path, result_path, REPOSITORIES, self.runner()),
-                [
-                    "/usr/local/libexec/marvis-ci/RUN_JOB.sh",
-                    str(job_path),
-                    str(result_path),
-                ],
-            )
 
     def test_runner_gate_uses_capacity_availability_and_cache(self):
         job = self.job()
@@ -454,11 +436,11 @@ class ContractTests(unittest.TestCase):
         large = self.runner(256)
         small = self.runner(128, free_disk_gib=256, cache_state="absent")
         self.assertEqual(
-            choose_runner(self.job(), [large, small], REPOSITORIES)["id"],
+            select_runner(self.job(), [large, small])["id"],
             "runner-128",
         )
         with self.assertRaises(ResourceError):
-            choose_runner(self.job(), [self.runner(64)], REPOSITORIES)
+            select_runner(self.job(), [self.runner(64)])
 
     def test_runner_snapshot_is_strictly_validated(self):
         runner = self.runner()
