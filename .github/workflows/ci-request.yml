@@ -102,7 +102,7 @@ jobs:
           path: request
       - name: Extract sealed job
         run: >-
-          /usr/bin/python3 -m runners.actions job
+          uv run --frozen python -m runners.actions job
           --jobs request/jobs.json
           --job-id "${{ matrix.job_id }}"
           --engines engines
@@ -129,7 +129,8 @@ jobs:
         id: execute
         continue-on-error: true
         env:
-          GITHUB_REPOSITORY: ${{ matrix.repository }}
+          CI_JOB_REPOSITORY: ${{ matrix.repository }}
+          CI_ORCHESTRATOR_ROOT: ${{ github.workspace }}
         run: |
           started_ms="$(/usr/bin/python3 -c 'import time; print(int(time.time() * 1000))')"
           echo "started_ms=$started_ms" >> "$GITHUB_OUTPUT"
@@ -149,7 +150,7 @@ jobs:
         run: |
           chip="$(sysctl -n machdep.cpu.brand_string 2>/dev/null || printf 'Apple silicon')"
           memory_gib="$(($(sysctl -n hw.memsize) / 1024 / 1024 / 1024))"
-          /usr/bin/python3 -m runners.actions normalize \
+          uv run --frozen python -m runners.actions normalize \
             --jobs job.json \
             --raw raw-result.json \
             --chip "$chip" \
