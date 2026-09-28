@@ -17,6 +17,7 @@ from runners.contract import (
     validate_result,
 )
 from runners.engines import load_engines
+from runners.resources import runner_tier_gib
 
 ERROR_DETAILS = {
     "CalledProcessError": "Checkout or test command failed",
@@ -48,6 +49,9 @@ def matrix(
     include = []
     for job in jobs:
         validate_job(job, repositories)
+        runner_tier = runner_tier_gib(job["required_memory_gib"])
+        if runner_tier is None:
+            continue
         include.append(
             {
                 "job_id": job["id"],
@@ -56,7 +60,7 @@ def matrix(
                 "base_sha": job["base_sha"],
                 "head_sha": job["head_sha"],
                 "contract_sha": job["contract_sha"],
-                "memory_label": f"memory-{job['required_memory_gib']}gb",
+                "memory_label": f"memory-{runner_tier}gb",
             }
         )
     return {"include": include}

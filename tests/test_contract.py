@@ -16,6 +16,7 @@ from runners.contract import (
     validate_result,
 )
 from runners.resources import GIB
+from runners.resources import runner_tier_gib
 
 REPOSITORIES = {"vlm": "Marvis-Labs/mlx-vlm", "audio": "Marvis-Labs/mlx-audio"}
 
@@ -271,6 +272,10 @@ class ContractTests(unittest.TestCase):
         entry = value["include"][0]
         self.assertEqual(entry["job_id"], job["id"])
         self.assertEqual(entry["memory_label"], "memory-128gb")
+        self.assertEqual(runner_tier_gib(16), 16)
+        self.assertEqual(runner_tier_gib(32), 128)
+        self.assertEqual(runner_tier_gib(64), 128)
+        self.assertIsNone(runner_tier_gib(256))
 
     def test_runner_result_is_sanitized_before_collection(self):
         job = self.job()

@@ -4,6 +4,7 @@ from typing import Any
 
 GIB = 1 << 30
 MEMORY_TIERS_GIB = (16, 32, 64, 128, 256, 512)
+RUNNER_TIERS_GIB = (16, 128)
 MIN_DEVICE_RESERVE = 4 * GIB
 MIN_MODEL_OVERHEAD = 2 * GIB
 MIN_WORKSPACE = 4 * GIB
@@ -33,6 +34,12 @@ def memory_tier_gib(estimated_peak_bytes: int) -> int:
         if estimated_peak_bytes <= physical - device_reserve_bytes(physical):
             return tier
     raise ResourceError("no runner memory tier can fit this job")
+
+
+def runner_tier_gib(required_memory_gib: int) -> int | None:
+    return next(
+        (tier for tier in RUNNER_TIERS_GIB if required_memory_gib <= tier), None
+    )
 
 
 def calculate_requirements(

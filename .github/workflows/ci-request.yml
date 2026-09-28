@@ -89,6 +89,7 @@ jobs:
             attempt.json
             plan.json
             jobs.json
+            participant/ci/output.py
           if-no-files-found: error
           retention-days: 7
       - name: Notify participant repository
@@ -141,12 +142,6 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          repository: ${{ matrix.repository }}
-          ref: ${{ matrix.base_sha }}
-          path: base
-          persist-credentials: false
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
           repository: ${{ matrix.head_repository }}
           ref: ${{ matrix.head_sha }}
           path: head
@@ -165,7 +160,7 @@ jobs:
             -- /usr/bin/python3 -m ci.work_executor \
             --job "$GITHUB_WORKSPACE/job.json" \
             --control "$GITHUB_WORKSPACE/control" \
-            --base "$GITHUB_WORKSPACE/base" \
+            --base "$GITHUB_WORKSPACE/control" \
             --head "$GITHUB_WORKSPACE/head"
       - name: Sanitize runner result
         if: always()
@@ -224,12 +219,20 @@ jobs:
           --run-url "$RUN_URL"
           --engines engines
           --output bundle.json
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        with:
-          name: ci-results-${{ github.run_id }}-${{ github.run_attempt }}
-          path: bundle.json
-          if-no-files-found: error
-          retention-days: 7
+      - name: Render Mixie comment
+        id: comment
+        env:
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_ID: ${{ github.run_id }}
+        run: >-
+          python request/participant/ci/output.py comment
+          --bundle bundle.json
+          --repository "${{ needs.prepare.outputs.repository }}"
+          --run-id "$RUN_ID"
+          --run-attempt "$RUN_ATTEMPT"
+          --output "$RUNNER_TEMP/comment.md"
+          --request "$RUNNER_TEMP/comment.json"
+          --github-output "$GITHUB_OUTPUT"
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app
         with:
@@ -237,16 +240,19 @@ jobs:
           private-key: ${{ secrets.MLX_CI_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: mlx-vlm
-          permission-contents: write
-      - name: Notify participant repository
+          permission-pull-requests: write
+      - name: Post Mixie comment
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR_NUMBER: ${{ steps.comment.outputs.pull_request }}
           REPOSITORY: ${{ needs.prepare.outputs.repository }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
-          RUN_ID: ${{ github.run_id }}
-        run: |
-          gh api "repos/$REPOSITORY/dispatches" --method POST \
-            -f event_type=ci-run-result \
-            -F 'client_payload[schema_version]=1' \
-            -F "client_payload[run_id]=$RUN_ID" \
-            -F "client_payload[run_attempt]=$RUN_ATTEMPT"
+        run: >-
+          gh api "repos/$REPOSITORY/issues/$PR_NUMBER/comments"
+          --method POST
+          --input "$RUNNER_TEMP/comment.json"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: ci-results-${{ github.run_id }}-${{ github.run_attempt }}
+          path: bundle.json
+          if-no-files-found: error
+          retention-days: 7
