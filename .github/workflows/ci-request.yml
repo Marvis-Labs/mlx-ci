@@ -125,7 +125,7 @@ jobs:
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     runs-on:
       group: marvis-apple-silicon
-      labels: ${{ matrix.memory_label }}
+      labels: [marvis-ci, apple-silicon, mlx-ci-sandbox-v2, "${{ matrix.memory_label }}"]
     timeout-minutes: 120
     permissions:
       contents: read
