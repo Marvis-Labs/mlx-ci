@@ -5,7 +5,7 @@ from unittest.mock import patch
 from runners.contract import ContractError
 from runners.engines import load_engines
 from runners.github import resolve_request
-from runners.prepare import coalesced_run, prepare
+from runners.prepare import prepare, same_active_attempt
 
 ENGINES = load_engines(Path(__file__).resolve().parents[1] / "engines")
 
@@ -107,7 +107,6 @@ class GitHubTests(unittest.TestCase):
 
     def test_prepare_accepts_only_the_registered_dispatch(self):
         event = {"action": "ci-run-request", "client_payload": self.request}
-        directory = Path(__file__).resolve().parents[1] / "engines"
         with (
             patch(
                 "runners.prepare.github_get",
@@ -115,16 +114,15 @@ class GitHubTests(unittest.TestCase):
             ),
             patch("runners.prepare.github_files", return_value=self.files),
         ):
-            attempt = prepare(event, directory, "token", 17, 2)
+            attempt = prepare(event, ENGINES, "token", 17, 2)
             self.assertEqual(attempt["head_sha"], "b" * 40)
             self.assertEqual(attempt["run_id"], 17)
             self.assertEqual(attempt["run_attempt"], 2)
         with self.assertRaises(ContractError):
-            prepare({**event, "action": "other"}, directory, "token", 17, 2)
+            prepare({**event, "action": "other"}, ENGINES, "token", 17, 2)
 
     def test_prepare_rejects_invalid_run_identity(self):
         event = {"action": "ci-run-request", "client_payload": self.request}
-        directory = Path(__file__).resolve().parents[1] / "engines"
         with (
             patch(
                 "runners.prepare.github_get",
@@ -133,7 +131,7 @@ class GitHubTests(unittest.TestCase):
             patch("runners.prepare.github_files", return_value=self.files),
         ):
             with self.assertRaises(ContractError):
-                prepare(event, directory, "token", 0, 1)
+                prepare(event, ENGINES, "token", 0, 1)
 
     def test_same_revision_active_or_later_completed_run_is_coalesced(self):
         attempt = {
@@ -159,32 +157,20 @@ class GitHubTests(unittest.TestCase):
             "status": "completed",
             "updated_at": "2026-09-28T18:24:41Z",
         }
-        self.assertEqual(coalesced_run(attempt, [(active, previous)]), 17)
-        self.assertEqual(
-            coalesced_run(
+        self.assertTrue(same_active_attempt(attempt, active, previous))
+        self.assertTrue(
+            same_active_attempt(attempt, completed_after_request, previous)
+        )
+        self.assertFalse(
+            same_active_attempt(attempt, completed_before_request, previous)
+        )
+        self.assertFalse(
+            same_active_attempt(
                 attempt,
-                [
-                    ({**active, "id": 19}, {**previous, "run_id": 19}),
-                    (active, previous),
-                ],
-            ),
-            17,
-        )
-        self.assertEqual(
-            coalesced_run(attempt, [(completed_after_request, previous)]), 17
-        )
-        self.assertIsNone(
-            coalesced_run(attempt, [(completed_before_request, previous)])
-        )
-        self.assertIsNone(
-            coalesced_run(
-                attempt,
-                [({**completed_after_request, "conclusion": "failure"}, previous)],
+                {**completed_after_request, "conclusion": "failure"},
+                previous,
             )
         )
-        self.assertIsNone(
-            coalesced_run(
-                attempt,
-                [(active, {**previous, "head_sha": "c" * 40})],
-            )
+        self.assertFalse(
+            same_active_attempt(attempt, active, {**previous, "head_sha": "c" * 40})
         )

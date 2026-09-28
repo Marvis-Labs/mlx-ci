@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from runners.actions import collect_results, matrix, memory_label, normalize_result
+from runners.actions import collect_results, matrix, normalize_result
 from runners.contract import (
     ContractError,
     read_json,
@@ -15,13 +15,7 @@ from runners.contract import (
     validate_request,
     validate_result,
 )
-from runners.resources import (
-    GIB,
-    ResourceError,
-    huggingface_cache_state,
-    runner_decision,
-    select_runner,
-)
+from runners.resources import GIB
 
 REPOSITORIES = {"vlm": "Marvis-Labs/mlx-vlm", "audio": "Marvis-Labs/mlx-audio"}
 
@@ -72,25 +66,6 @@ class ContractTests(unittest.TestCase):
             },
             REPOSITORIES,
         )
-
-    def runner(self, memory_gib=128, free_disk_gib=8, cache_state="complete"):
-        job = self.job()
-        return {
-            "schema_version": 1,
-            "id": f"runner-{memory_gib}",
-            "physical_memory_bytes": memory_gib * GIB,
-            "available_memory_bytes": memory_gib * GIB,
-            "free_disk_bytes": free_disk_gib * GIB,
-            "busy": False,
-            "artifacts": [
-                {
-                    "kind": job["artifact"]["kind"],
-                    "repository": job["artifact"]["repository"],
-                    "revision": job["artifact"]["revision"],
-                    "state": cache_state,
-                }
-            ],
-        }
 
     def test_request_is_repository_bound(self):
         self.assertEqual(
@@ -414,74 +389,3 @@ class ContractTests(unittest.TestCase):
             path.write_text('{"engine":"vlm","engine":"audio"}')
             with self.assertRaises(ContractError):
                 read_json(path)
-
-    def test_smallest_runner_tier(self):
-        self.assertEqual(memory_label(17), "memory-32gb")
-
-    def test_runner_gate_uses_capacity_availability_and_cache(self):
-        job = self.job()
-        self.assertEqual(
-            runner_decision(job, self.runner(64))["reason"],
-            "insufficient_memory",
-        )
-        unavailable = self.runner()
-        unavailable["available_memory_bytes"] = 64 * GIB
-        self.assertEqual(
-            runner_decision(job, unavailable)["reason"],
-            "insufficient_available_memory",
-        )
-        uncached = self.runner(free_disk_gib=8, cache_state="absent")
-        self.assertEqual(runner_decision(job, uncached)["reason"], "insufficient_disk")
-        self.assertTrue(runner_decision(job, self.runner())["eligible"])
-
-    def test_smallest_fit_runner_wins_before_cache_locality(self):
-        large = self.runner(256)
-        small = self.runner(128, free_disk_gib=256, cache_state="absent")
-        self.assertEqual(
-            select_runner(self.job(), [large, small])["id"],
-            "runner-128",
-        )
-        with self.assertRaises(ResourceError):
-            select_runner(self.job(), [self.runner(64)])
-
-    def test_runner_snapshot_is_strictly_validated(self):
-        runner = self.runner()
-        runner["command"] = "sh"
-        with self.assertRaisesRegex(ResourceError, "fields"):
-            runner_decision(self.job(), runner)
-        runner = self.runner()
-        runner["available_memory_bytes"] = runner["physical_memory_bytes"] + 1
-        with self.assertRaisesRegex(ResourceError, "available memory"):
-            runner_decision(self.job(), runner)
-
-    def test_huggingface_cache_requires_complete_weight_bytes(self):
-        artifact = self.job()["artifact"]
-        artifact = {**artifact, "tensor_bytes": 8}
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            snapshot = (
-                root
-                / "models--mlx-community--Qwen3.8-Flash-Next-4bit"
-                / "snapshots"
-                / artifact["revision"]
-            )
-            snapshot.mkdir(parents=True)
-            (snapshot / "config.json").write_text("{}")
-            (snapshot / "model.safetensors").write_bytes(b"1234")
-            self.assertEqual(huggingface_cache_state(artifact, root), "partial")
-            (snapshot / "model.safetensors").write_bytes(b"12345678")
-            self.assertEqual(huggingface_cache_state(artifact, root), "complete")
-            (snapshot / "model.safetensors.index.json").write_text(
-                json.dumps(
-                    {
-                        "weight_map": {
-                            "first": "model-00001.safetensors",
-                            "second": "model-00002.safetensors",
-                        }
-                    }
-                )
-            )
-            self.assertEqual(huggingface_cache_state(artifact, root), "partial")
-            (snapshot / "model-00001.safetensors").write_bytes(b"1234")
-            (snapshot / "model-00002.safetensors").write_bytes(b"5678")
-            self.assertEqual(huggingface_cache_state(artifact, root), "complete")

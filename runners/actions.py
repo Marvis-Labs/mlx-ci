@@ -17,22 +17,6 @@ from runners.contract import (
     validate_result,
 )
 from runners.engines import load_engines
-from runners.resources import MEMORY_TIERS_GIB
-
-
-def memory_label(required_gib: int) -> str:
-    if (
-        isinstance(required_gib, bool)
-        or not isinstance(required_gib, int)
-        or required_gib < 1
-    ):
-        raise ContractError("required memory is invalid")
-    for tier in MEMORY_TIERS_GIB:
-        if required_gib <= tier:
-            return f"memory-{tier}gb"
-    raise ContractError("no runner memory tier can fit this job")
-
-
 def _write(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
@@ -69,7 +53,7 @@ def matrix(
                 "base_sha": job["base_sha"],
                 "head_sha": job["head_sha"],
                 "contract_sha": job["contract_sha"],
-                "memory_label": memory_label(job["required_memory_gib"]),
+                "memory_label": f"memory-{job['required_memory_gib']}gb",
             }
         )
     return {"include": include}

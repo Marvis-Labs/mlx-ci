@@ -89,38 +89,32 @@ def _artifact_attempt(content: bytes) -> dict[str, Any]:
     return value
 
 
-def coalesced_run(
-    attempt: dict[str, Any],
-    candidates: list[tuple[dict[str, Any], dict[str, Any]]],
-) -> int | None:
-    requested_at = _time(attempt["requested_at"])
+def same_active_attempt(
+    attempt: dict[str, Any], run: dict[str, Any], previous: dict[str, Any]
+) -> bool:
     identity = ("repository", "pull_request", "base_sha", "head_sha")
-    for run, previous in sorted(candidates, key=lambda item: item[0]["id"]):
-        if run.get("id") == attempt["run_id"] or any(
-            previous.get(field) != attempt[field] for field in identity
-        ):
-            continue
-        if run.get("status") != "completed" or (
-            run.get("conclusion") == "success"
-            and _time(run.get("updated_at")) >= requested_at
-        ):
-            return run["id"]
-    return None
+    if run.get("id") == attempt["run_id"] or any(
+        previous.get(field) != attempt[field] for field in identity
+    ):
+        return False
+    return run.get("status") != "completed" or (
+        run.get("conclusion") == "success"
+        and _time(run.get("updated_at")) >= _time(attempt["requested_at"])
+    )
 
 
-def find_coalesced_run(
+def has_active_attempt(
     attempt: dict[str, Any],
     orchestrator: str,
     token: str,
     repositories: dict[str, str],
-) -> int | None:
+) -> bool:
     value = github_get(
         f"repos/{orchestrator}/actions/runs?event=repository_dispatch&per_page=30",
         token,
     )
     if not isinstance(value, dict) or not isinstance(value.get("workflow_runs"), list):
         raise ContractError("GitHub runs response is invalid")
-    candidates = []
     for run in value["workflow_runs"]:
         if (
             not isinstance(run, dict)
@@ -154,8 +148,9 @@ def find_coalesced_run(
             validate_attempt(previous, repositories)
         except ContractError:
             continue
-        candidates.append((run, previous))
-    return coalesced_run(attempt, candidates)
+        if same_active_attempt(attempt, run, previous):
+            return True
+    return False
 
 
 def github_files(path: str, token: str) -> list[dict]:
@@ -171,14 +166,17 @@ def github_files(path: str, token: str) -> list[dict]:
 
 
 def prepare(
-    event: dict, engines_directory: Path, token: str, run_id: int, run_attempt: int
+    event: dict,
+    engines: dict[str, dict[str, Any]],
+    token: str,
+    run_id: int,
+    run_attempt: int,
 ) -> dict:
     if event.get("action") != "ci-run-request":
         raise ContractError("unsupported event")
     payload = event.get("client_payload")
     if not isinstance(payload, dict):
         raise ContractError("request payload is invalid")
-    engines = load_engines(engines_directory)
     attempt = resolve_request(
         payload,
         engines,
@@ -205,16 +203,14 @@ def main() -> int:
         run_attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
     except (KeyError, ValueError) as error:
         raise ContractError("workflow run identity is unavailable") from error
-    attempt = prepare(
-        read_json(arguments.event), arguments.engines, token, run_id, run_attempt
-    )
+    engines = load_engines(arguments.engines)
+    attempt = prepare(read_json(arguments.event), engines, token, run_id, run_attempt)
     actions_token = os.environ.get("CI_ACTIONS_TOKEN", "")
     orchestrator = os.environ.get("CI_ORCHESTRATOR_REPOSITORY", "")
     if len(actions_token) < 20 or "\n" in actions_token or not orchestrator:
         raise ContractError("workflow token is unavailable")
-    engines = load_engines(arguments.engines)
     repositories = {name: engine["repository"] for name, engine in engines.items()}
-    duplicate = find_coalesced_run(attempt, orchestrator, actions_token, repositories)
+    duplicate = has_active_attempt(attempt, orchestrator, actions_token, repositories)
     with tempfile.NamedTemporaryFile(
         mode="w", encoding="utf-8", dir=arguments.output.parent, delete=False
     ) as stream:
@@ -226,9 +222,7 @@ def main() -> int:
         with arguments.github_output.open("a", encoding="utf-8") as stream:
             for field in ("engine", "repository", "contract_sha"):
                 stream.write(f"{field}={attempt[field]}\n")
-            stream.write(f"coalesced={'true' if duplicate is not None else 'false'}\n")
-            if duplicate is not None:
-                stream.write(f"coalesced_run_id={duplicate}\n")
+            stream.write(f"coalesced={'true' if duplicate else 'false'}\n")
     return 0
 
 
