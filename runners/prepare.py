@@ -115,7 +115,7 @@ def find_coalesced_run(
     repositories: dict[str, str],
 ) -> int | None:
     value = github_get(
-        f"repos/{orchestrator}/actions/runs?event=repository_dispatch&per_page=100",
+        f"repos/{orchestrator}/actions/runs?event=repository_dispatch&per_page=30",
         token,
     )
     if not isinstance(value, dict) or not isinstance(value.get("workflow_runs"), list):
