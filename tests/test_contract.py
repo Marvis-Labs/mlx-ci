@@ -317,6 +317,39 @@ class ContractTests(unittest.TestCase):
         self.assertNotIn("private-hostname", json.dumps(result))
         self.assertEqual(result["cache"], "hit")
 
+    def test_runner_findings_are_preserved_without_exposing_internal_errors(self):
+        job = self.job()
+        raw = {
+            "job_id": job["id"],
+            "outcome": "test_failure",
+            "reason": None,
+            "cache": {"before": "not_applicable", "after": "not_applicable"},
+            "findings": {
+                "error": "CalledProcessError: /Users/private/checkout",
+                "metrics": [],
+                "verdict": "test_failure",
+            },
+        }
+        result = normalize_result(job, raw, "Apple M4", 16, 25)
+        self.assertEqual(result["checks"][0]["detail"], "Checkout or test command failed")
+        self.assertNotIn("/Users/private", json.dumps(result))
+
+        raw["outcome"] = "passed"
+        raw["findings"] = {
+            "checks": [
+                {
+                    "name": "Synthetic structure",
+                    "category": "correctness",
+                    "status": "passed",
+                    "detail": "Main and PR passed",
+                }
+            ],
+            "metrics": [],
+            "verdict": "passed",
+        }
+        result = normalize_result(job, raw, "Apple M4", 16, 25)
+        self.assertEqual(result["checks"], raw["findings"]["checks"])
+
     def test_collection_represents_missing_runner_without_inventing_device(self):
         job = self.job()
         attempt = {

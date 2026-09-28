@@ -164,6 +164,27 @@ def normalize_result(
     metrics = findings.get("metrics", []) if isinstance(findings, dict) else []
     if not isinstance(metrics, list):
         metrics = []
+    checks = findings.get("checks") if isinstance(findings, dict) else None
+    if not isinstance(checks, list) or not checks or infrastructure:
+        error = findings.get("error") if isinstance(findings, dict) else None
+        if isinstance(error, str) and error:
+            error_type = error.partition(":")[0]
+            detail = {
+                "CalledProcessError": "Checkout or test command failed",
+                "ExecutionSecurityError": "Execution verification failed",
+                "RuntimeError": "Model probe failed",
+                "ValueError": "Test configuration failed validation",
+            }.get(error_type, "Executor failed before producing checks")
+        else:
+            detail = str(reason).replace("_", " ")[:160]
+        checks = [
+            {
+                "name": job["subject"],
+                "category": "infrastructure" if infrastructure else "correctness",
+                "status": status,
+                "detail": detail,
+            }
+        ]
     result = {
         "schema_version": 2,
         "job_id": job["id"],
@@ -172,14 +193,7 @@ def normalize_result(
         "device": device,
         "cache": cache,
         "duration_ms": duration_ms,
-        "checks": [
-            {
-                "name": job["subject"],
-                "category": "infrastructure" if infrastructure else "correctness",
-                "status": status,
-                "detail": str(reason).replace("_", " ")[:160],
-            }
-        ],
+        "checks": checks,
         "metrics": metrics,
     }
     if status == "failed":
