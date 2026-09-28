@@ -30,7 +30,7 @@ jobs:
           client-id: ${{ vars.MLX_CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.MLX_CI_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: mlx-vlm,mlx-audio
+          repositories: mlx-vlm
           permission-contents: read
           permission-issues: read
           permission-pull-requests: read
@@ -210,7 +210,7 @@ jobs:
           client-id: ${{ vars.MLX_CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.MLX_CI_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: mlx-vlm,mlx-audio
+          repositories: mlx-vlm
           permission-contents: write
       - name: Notify participant repository
         env:
