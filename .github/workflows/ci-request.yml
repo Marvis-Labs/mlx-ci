@@ -76,10 +76,14 @@ jobs:
       - name: Build runner matrix
         id: matrix
         if: steps.prepare.outputs.coalesced != 'true'
+        env:
+          RUNNER_MEMORY_TIERS: ${{ vars.MLX_CI_RUNNER_MEMORY_TIERS }}
         run: >-
           python -m runners.actions matrix
           --jobs jobs.json
           --engines engines
+          --runner-tiers "$RUNNER_MEMORY_TIERS"
+          --output dispatch.json
           --github-output "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: steps.prepare.outputs.coalesced != 'true'
@@ -89,6 +93,7 @@ jobs:
             attempt.json
             plan.json
             jobs.json
+            dispatch.json
             participant/ci/output.py
           if-no-files-found: error
           retention-days: 7
@@ -215,6 +220,7 @@ jobs:
           python -m runners.actions collect
           --attempt request/attempt.json
           --jobs request/jobs.json
+          --dispatch request/dispatch.json
           --results results
           --run-url "$RUN_URL"
           --engines engines

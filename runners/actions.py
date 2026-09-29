@@ -17,7 +17,7 @@ from runners.contract import (
     validate_result,
 )
 from runners.engines import load_engines
-from runners.resources import runner_tier_gib
+from runners.resources import parse_runner_tiers, runner_tier_gib
 
 ERROR_DETAILS = {
     "CalledProcessError": "Checkout or test command failed",
@@ -39,18 +39,21 @@ def _write(path: Path, value: dict[str, Any]) -> None:
 
 
 def matrix(
-    jobs_document: dict[str, Any], repositories: dict[str, str]
+    jobs_document: dict[str, Any],
+    repositories: dict[str, str],
+    available_tiers_gib: tuple[int, ...],
 ) -> dict[str, Any]:
     if set(jobs_document) != {"schema_version", "jobs", "blocked"}:
         raise ContractError("jobs document fields are invalid")
     jobs = jobs_document["jobs"]
     if jobs_document["schema_version"] != 1 or not isinstance(jobs, list):
         raise ContractError("jobs document is invalid")
-    include = []
+    include, unavailable = [], []
     for job in jobs:
         validate_job(job, repositories)
-        runner_tier = runner_tier_gib(job["required_memory_gib"])
+        runner_tier = runner_tier_gib(job["required_memory_gib"], available_tiers_gib)
         if runner_tier is None:
+            unavailable.append(job["id"])
             continue
         include.append(
             {
@@ -63,7 +66,7 @@ def matrix(
                 "memory_label": f"memory-{runner_tier}gb",
             }
         )
-    return {"include": include}
+    return {"include": include, "unavailable": unavailable}
 
 
 def extract_job(
@@ -113,6 +116,19 @@ def _infrastructure_failure(
         "detail": detail,
     }
     return _result(job, "infrastructure_failure", device, duration_ms, [check], [])
+
+
+def _capability_skip(job: dict[str, Any]) -> dict[str, Any]:
+    check = {
+        "name": "Checkpoint output",
+        "category": "infrastructure",
+        "status": "skipped",
+        "detail": (
+            "Needs a capable runner with at least "
+            f"{job['required_memory_gib']} GB unified memory"
+        ),
+    }
+    return _result(job, "skipped", None, 0, [check], [])
 
 
 def normalize_result(
@@ -177,14 +193,39 @@ def collect_results(
     result_directory: Path,
     run_url: str,
     repositories: dict[str, str],
+    dispatch: dict[str, Any],
 ) -> dict[str, Any]:
     validate_attempt(attempt, repositories)
+    unavailable = dispatch.get("unavailable")
+    included = dispatch.get("include")
+    if (
+        set(dispatch) != {"include", "unavailable"}
+        or not isinstance(included, list)
+        or not isinstance(unavailable, list)
+        or any(not isinstance(job_id, str) for job_id in unavailable)
+    ):
+        raise ContractError("dispatch decision is invalid")
+    if any(not isinstance(entry, dict) for entry in included):
+        raise ContractError("dispatch decision is invalid")
+    dispatched_ids = [entry.get("job_id") for entry in included]
+    if (
+        any(not isinstance(job_id, str) for job_id in dispatched_ids)
+        or len(dispatched_ids) != len(set(dispatched_ids))
+        or len(unavailable) != len(set(unavailable))
+    ):
+        raise ContractError("dispatch decision is invalid")
+    dispatched = set(dispatched_ids)
+    expected = {job.get("id") for job in jobs_document.get("jobs", [])}
+    if dispatched & set(unavailable) or dispatched | set(unavailable) != expected:
+        raise ContractError("dispatch decision does not cover every job")
     results = []
     for job in jobs_document.get("jobs", []):
         validate_job(job, repositories)
         path = result_directory / f"{job['id']}.json"
         if path.is_file():
             result = validate_result(read_json(path), job)
+        elif job["id"] in unavailable:
+            result = _capability_skip(job)
         else:
             result = _infrastructure_failure(
                 job, None, 0, "No eligible runner reported a result"
@@ -209,8 +250,37 @@ def bundle_passed(bundle: dict[str, Any]) -> bool:
         raise ContractError("result bundle is invalid")
     if blocked:
         return False
+    jobs_by_id = {
+        job.get("id"): job for job in jobs.get("jobs", []) if isinstance(job, dict)
+    }
+    results_by_id = {
+        result.get("job_id"): result for result in results if isinstance(result, dict)
+    }
     for result in results:
-        if not isinstance(result, dict) or result.get("status") != "passed":
+        if not isinstance(result, dict):
+            return False
+        status = result.get("status")
+        if status == "skipped":
+            job = jobs_by_id.get(result.get("job_id"))
+            if not job or job.get("phases") != ["checkpoint"]:
+                return False
+            synthetic = next(
+                (
+                    candidate
+                    for candidate in jobs_by_id.values()
+                    if candidate.get("component") == job.get("component")
+                    and candidate.get("subject") == job.get("subject")
+                    and candidate.get("phases") == ["synthetic"]
+                ),
+                None,
+            )
+            if (
+                not synthetic
+                or results_by_id.get(synthetic.get("id"), {}).get("status") != "passed"
+            ):
+                return False
+            continue
+        if status != "passed":
             return False
         metrics = result.get("metrics")
         if not isinstance(metrics, list):
@@ -236,6 +306,8 @@ def main() -> int:
     parser.add_argument("--started-ms", type=int)
     parser.add_argument("--run-url")
     parser.add_argument("--github-output", type=Path)
+    parser.add_argument("--dispatch", type=Path)
+    parser.add_argument("--runner-tiers")
     parser.add_argument("--engines", required=True, type=Path)
     parser.add_argument("--output", type=Path)
     arguments = parser.parse_args()
@@ -248,10 +320,17 @@ def main() -> int:
             read_json(arguments.attempt), read_json(arguments.plan), repositories
         )
     elif arguments.command == "matrix":
-        value = matrix(read_json(arguments.jobs), repositories)
+        value = matrix(
+            read_json(arguments.jobs),
+            repositories,
+            parse_runner_tiers(arguments.runner_tiers or ""),
+        )
         if arguments.github_output:
             with arguments.github_output.open("a", encoding="utf-8") as stream:
-                stream.write(f"matrix={json.dumps(value, separators=(',', ':'))}\n")
+                matrix_value = {"include": value["include"]}
+                stream.write(
+                    f"matrix={json.dumps(matrix_value, separators=(',', ':'))}\n"
+                )
                 stream.write(f"has_jobs={'true' if value['include'] else 'false'}\n")
     elif arguments.command == "job":
         value = extract_job(read_json(arguments.jobs), arguments.job_id, repositories)
@@ -277,6 +356,7 @@ def main() -> int:
             arguments.results,
             arguments.run_url,
             repositories,
+            read_json(arguments.dispatch),
         )
     else:
         return 0 if bundle_passed(read_json(arguments.results)) else 1

@@ -267,15 +267,17 @@ class ContractTests(unittest.TestCase):
     def test_dispatch_matrix_uses_smallest_memory_label(self):
         job = self.job()
         value = matrix(
-            {"schema_version": 1, "jobs": [job], "blocked": []}, REPOSITORIES
+            {"schema_version": 1, "jobs": [job], "blocked": []},
+            REPOSITORIES,
+            (16, 128),
         )
         entry = value["include"][0]
         self.assertEqual(entry["job_id"], job["id"])
         self.assertEqual(entry["memory_label"], "memory-128gb")
-        self.assertEqual(runner_tier_gib(16), 16)
-        self.assertEqual(runner_tier_gib(32), 128)
-        self.assertEqual(runner_tier_gib(64), 128)
-        self.assertIsNone(runner_tier_gib(256))
+        self.assertEqual(runner_tier_gib(16, (16, 128)), 16)
+        self.assertEqual(runner_tier_gib(32, (16, 128)), 128)
+        self.assertEqual(runner_tier_gib(64, (16, 128)), 128)
+        self.assertIsNone(runner_tier_gib(256, (16, 128)))
 
     def test_runner_result_is_sanitized_before_collection(self):
         job = self.job()
@@ -306,7 +308,9 @@ class ContractTests(unittest.TestCase):
             },
         }
         result = normalize_result(job, raw, "Apple M4", 16, 25)
-        self.assertEqual(result["checks"][0]["detail"], "Checkout or test command failed")
+        self.assertEqual(
+            result["checks"][0]["detail"], "Checkout or test command failed"
+        )
         self.assertNotIn("/Users/private", json.dumps(result))
 
         raw["outcome"] = "passed"
@@ -349,10 +353,108 @@ class ContractTests(unittest.TestCase):
                 Path(directory),
                 "https://github.com/Marvis-Labs/mlx-ci/actions/runs/17",
                 REPOSITORIES,
+                {
+                    "include": [{"job_id": job["id"]}],
+                    "unavailable": [],
+                },
             )
         result = bundle["results"][0]
         self.assertEqual(result["status"], "infrastructure_failure")
         self.assertIsNone(result["device"])
+
+    def test_capability_skip_is_distinct_from_runner_failure(self):
+        checkpoint = self.job()
+        source = {
+            key: value
+            for key, value in checkpoint.items()
+            if key
+            not in {
+                "estimated_peak_bytes",
+                "required_memory_gib",
+                "required_disk_gib",
+                "manifest_digest",
+            }
+        }
+        synthetic = seal_job(
+            {
+                **source,
+                "id": "model-qwen2_vl-synthetic",
+                "phases": ["synthetic"],
+                "work": {"synthetic": {"selectors": ["contract"]}},
+                "resources": {
+                    "resident_bytes": 256 << 20,
+                    "fixed_bytes": GIB,
+                    "bytes_per_unit": 256 << 10,
+                    "units": 512,
+                    "batch_size": 1,
+                    "workspace_bytes": 4 * GIB,
+                },
+                "artifact": None,
+            },
+            REPOSITORIES,
+        )
+        checkpoint = seal_job(
+            {
+                **source,
+                "id": "model-qwen2_vl-checkpoint",
+                "phases": ["checkpoint"],
+                "work": {"checkpoint": source["work"]["checkpoint"]},
+            },
+            REPOSITORIES,
+        )
+        synthetic_result = {
+            "schema_version": 2,
+            "job_id": synthetic["id"],
+            "manifest_digest": synthetic["manifest_digest"],
+            "status": "passed",
+            "device": {"chip": "Apple M4", "memory_gib": 16},
+            "cache": "not_applicable",
+            "duration_ms": 25,
+            "checks": [
+                {
+                    "name": "Synthetic",
+                    "category": "correctness",
+                    "status": "passed",
+                    "detail": "Contracts passed",
+                }
+            ],
+            "metrics": [],
+        }
+        attempt = {
+            "schema_version": 2,
+            "engine": "vlm",
+            "repository": REPOSITORIES["vlm"],
+            "pull_request": 42,
+            "comment_id": 123,
+            "requested_at": "2026-09-28T18:24:42Z",
+            "base_sha": "a" * 40,
+            "head_sha": "b" * 40,
+            "head_repository": "contributor/mlx-vlm",
+            "contract_sha": "a" * 40,
+            "run_id": 17,
+            "run_attempt": 1,
+            "changed_files": ["mlx_vlm/models/qwen2_vl/vision.py"],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            result_directory = Path(directory)
+            (result_directory / f"{synthetic['id']}.json").write_text(
+                json.dumps(synthetic_result)
+            )
+            bundle = collect_results(
+                attempt,
+                {"schema_version": 1, "jobs": [synthetic, checkpoint], "blocked": []},
+                result_directory,
+                "https://github.com/Marvis-Labs/mlx-ci/actions/runs/17",
+                REPOSITORIES,
+                {
+                    "include": [{"job_id": synthetic["id"]}],
+                    "unavailable": [checkpoint["id"]],
+                },
+            )
+        skipped = bundle["results"][1]
+        self.assertEqual(skipped["status"], "skipped")
+        self.assertIn("Needs a capable runner", skipped["checks"][0]["detail"])
+        self.assertTrue(bundle_passed(bundle))
 
     def test_correctness_failure_allows_only_advisory_metrics(self):
         job = self.job()
