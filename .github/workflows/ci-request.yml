@@ -241,6 +241,7 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: mlx-vlm
           permission-pull-requests: write
+          permission-statuses: write
       - name: Post Mixie comment
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
@@ -256,8 +257,19 @@ jobs:
           path: bundle.json
           if-no-files-found: error
           retention-days: 7
-      - name: Enforce CI verdict
-        run: >-
-          python -m runners.actions gate
-          --results bundle.json
-          --engines engines
+      - name: Publish Mixie verdict
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPOSITORY: ${{ needs.prepare.outputs.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          state=success
+          description="Verification passed"
+          if ! python -m runners.actions gate --results bundle.json --engines engines; then
+            state=failure
+            description="Verification failed"
+          fi
+          gh api "repos/$REPOSITORY/statuses/$(jq -r .attempt.head_sha bundle.json)" \
+            --method POST -f state="$state" -f context="Mixie CI" \
+            -f description="$description" -f target_url="$RUN_URL"
+          test "$state" = success
