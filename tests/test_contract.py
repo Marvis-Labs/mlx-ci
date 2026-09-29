@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from runners.actions import collect_results, matrix, normalize_result
+from runners.actions import bundle_passed, collect_results, matrix, normalize_result
 from runners.contract import (
     ContractError,
     read_json,
@@ -387,6 +387,32 @@ class ContractTests(unittest.TestCase):
         result["metrics"][0]["verdict"] = "improved"
         with self.assertRaisesRegex(ContractError, "advisory"):
             validate_result(result, job)
+
+    def test_bundle_gate_accepts_only_clean_results(self):
+        bundle = {
+            "jobs": {"blocked": []},
+            "results": [{"status": "passed", "metrics": []}],
+        }
+        self.assertTrue(bundle_passed(bundle))
+
+        bundle["results"][0]["metrics"] = [{"verdict": "regressed"}]
+        self.assertFalse(bundle_passed(bundle))
+
+        bundle["results"][0] = {"status": "failed", "metrics": []}
+        self.assertFalse(bundle_passed(bundle))
+
+        bundle["results"][0] = {
+            "status": "infrastructure_failure",
+            "metrics": [],
+        }
+        self.assertFalse(bundle_passed(bundle))
+
+    def test_bundle_gate_rejects_blocked_work(self):
+        bundle = {
+            "jobs": {"blocked": [{"reason": "model_case_missing"}]},
+            "results": [],
+        }
+        self.assertFalse(bundle_passed(bundle))
 
     def test_reader_rejects_duplicate_keys(self):
         with tempfile.TemporaryDirectory() as directory:

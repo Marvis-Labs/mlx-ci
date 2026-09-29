@@ -256,3 +256,8 @@ jobs:
           path: bundle.json
           if-no-files-found: error
           retention-days: 7
+      - name: Enforce CI verdict
+        run: >-
+          python -m runners.actions gate
+          --results bundle.json
+          --engines engines

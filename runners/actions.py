@@ -199,10 +199,31 @@ def collect_results(
     }
 
 
+def bundle_passed(bundle: dict[str, Any]) -> bool:
+    jobs = bundle.get("jobs")
+    results = bundle.get("results")
+    if not isinstance(jobs, dict) or not isinstance(results, list):
+        raise ContractError("result bundle is invalid")
+    blocked = jobs.get("blocked")
+    if not isinstance(blocked, list):
+        raise ContractError("result bundle is invalid")
+    if blocked:
+        return False
+    for result in results:
+        if not isinstance(result, dict) or result.get("status") != "passed":
+            return False
+        metrics = result.get("metrics")
+        if not isinstance(metrics, list):
+            raise ContractError("result bundle is invalid")
+        if any(metric.get("verdict") == "regressed" for metric in metrics):
+            return False
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "command", choices=("seal", "matrix", "job", "normalize", "collect")
+        "command", choices=("seal", "matrix", "job", "normalize", "collect", "gate")
     )
     parser.add_argument("--attempt", type=Path)
     parser.add_argument("--plan", type=Path)
@@ -249,7 +270,7 @@ def main() -> int:
             arguments.memory_gib,
             max(0, int(time.time() * 1000) - started),
         )
-    else:
+    elif arguments.command == "collect":
         value = collect_results(
             read_json(arguments.attempt),
             read_json(arguments.jobs),
@@ -257,6 +278,8 @@ def main() -> int:
             arguments.run_url,
             repositories,
         )
+    else:
+        return 0 if bundle_passed(read_json(arguments.results)) else 1
     if arguments.output:
         _write(arguments.output, value)
     return 0
