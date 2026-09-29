@@ -160,7 +160,7 @@ def main() -> int:
     os.replace(temporary, arguments.output)
     if arguments.github_output is not None:
         with arguments.github_output.open("a", encoding="utf-8") as stream:
-            for field in ("engine", "repository", "contract_sha"):
+            for field in ("engine", "repository", "head_sha", "contract_sha"):
                 stream.write(f"{field}={attempt[field]}\n")
             stream.write(f"coalesced={'true' if duplicate else 'false'}\n")
     return 0
