@@ -19,6 +19,7 @@ jobs:
     outputs:
       coalesced: ${{ steps.prepare.outputs.coalesced }}
       has_jobs: ${{ steps.matrix.outputs.has_jobs }}
+      head_sha: ${{ steps.prepare.outputs.head_sha }}
       matrix: ${{ steps.matrix.outputs.matrix }}
       repository: ${{ steps.prepare.outputs.repository }}
     steps:
@@ -39,6 +40,7 @@ jobs:
           permission-contents: write
           permission-issues: read
           permission-pull-requests: read
+          permission-statuses: write
       - name: Validate request and pin revisions
         id: prepare
         env:
@@ -92,6 +94,17 @@ jobs:
             participant/ci/output.py
           if-no-files-found: error
           retention-days: 7
+      - name: Publish pending Mixie status
+        if: steps.prepare.outputs.coalesced != 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          HEAD_SHA: ${{ steps.prepare.outputs.head_sha }}
+          REPOSITORY: ${{ steps.prepare.outputs.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: >-
+          gh api "repos/$REPOSITORY/statuses/$HEAD_SHA"
+          --method POST -f state=pending -f context="Mixie CI"
+          -f description="Queued for Apple silicon verification" -f target_url="$RUN_URL"
       - name: Notify participant repository
         if: steps.prepare.outputs.coalesced == 'true'
         env:
@@ -235,6 +248,7 @@ jobs:
           --github-output "$GITHUB_OUTPUT"
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app
+        if: always()
         with:
           client-id: ${{ vars.MLX_CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.MLX_CI_APP_PRIVATE_KEY }}
@@ -258,18 +272,25 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Publish Mixie verdict
+        if: always()
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
+          HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
+          JOB_STATUS: ${{ job.status }}
           REPOSITORY: ${{ needs.prepare.outputs.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          state=success
-          description="Verification passed"
-          if ! python -m runners.actions gate --results bundle.json --engines engines; then
-            state=failure
-            description="Verification failed"
+          state=error
+          description="CI infrastructure failed"
+          if [ "$JOB_STATUS" = success ]; then
+            state=success
+            description="Verification passed"
+            if ! python -m runners.actions gate --results bundle.json --engines engines; then
+              state=failure
+              description="Verification failed"
+            fi
           fi
-          gh api "repos/$REPOSITORY/statuses/$(jq -r .attempt.head_sha bundle.json)" \
+          gh api "repos/$REPOSITORY/statuses/$HEAD_SHA" \
             --method POST -f state="$state" -f context="Mixie CI" \
             -f description="$description" -f target_url="$RUN_URL"
           test "$state" = success
